@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
 import { InstallAppDialog } from "@/components/install-app-dialog";
@@ -24,6 +24,17 @@ export default function AuthPage() {
   const { setUser, setLoading } = useAuth();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"login" | "register">("login");
+
+  // Local dev: bypass auth UI entirely.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      setLocation("/");
+    }
+  }, [setLocation]);
+
+  if (import.meta.env.DEV) {
+    return null;
+  }
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),

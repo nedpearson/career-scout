@@ -5,7 +5,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
 import { db } from "./db";
-import { users as legacyUsers } from "@shared/schema";
+import { applications, jobs, resumeProfile, users as legacyUsers } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { prisma } from "./prisma";
 import { getJobtrackerDatabaseUrl } from "./prisma";
@@ -34,6 +34,14 @@ function isTruthy(v: string | undefined) {
   return raw === "true" || raw === "1" || raw === "yes";
 }
 
+function isDevAuthBypassEnabled() {
+  if (process.env.NODE_ENV === "production") return false;
+  const raw = (process.env.CAREER_SCOUT_DEV_AUTH_BYPASS ?? "").toLowerCase().trim();
+  // Default to enabled in non-production unless explicitly disabled.
+  if (!raw) return true;
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
 function isDemoLoginEnabled() {
   // In production, require explicit opt-in.
   if (process.env.NODE_ENV === "production") {
@@ -50,6 +58,95 @@ function dbNotConfiguredError() {
   );
   err.status = 503;
   return err;
+}
+
+let devSeedPromise: Promise<AuthUser> | null = null;
+async function ensureDevSeedUser(): Promise<AuthUser> {
+  if (devSeedPromise) return devSeedPromise;
+
+  devSeedPromise = (async () => {
+    const id = (process.env.CAREER_SCOUT_DEV_ADMIN_ID?.trim() || "dev_admin").slice(0, 128);
+    const email = (process.env.CAREER_SCOUT_DEV_ADMIN_EMAIL?.trim() || "dev-admin@career-scout.local")
+      .toLowerCase()
+      .slice(0, 254);
+    const name = (process.env.CAREER_SCOUT_DEV_ADMIN_NAME?.trim() || "Dev Admin").slice(0, 200);
+
+    if (!getJobtrackerDatabaseUrl()) throw dbNotConfiguredError();
+
+    // Seed Prisma user (JobTracker models).
+    const userRow = await prisma.user.upsert({
+      where: { id },
+      update: { email, name },
+      create: {
+        id,
+        email,
+        name,
+        rememberMe: true,
+        profile: { create: {} },
+      },
+    });
+
+    // Ensure legacy Drizzle user exists for Career Scout tables.
+    const legacy = await db.select().from(legacyUsers).where(eq(legacyUsers.id, id)).limit(1);
+    if (!legacy[0]) {
+      await db.insert(legacyUsers).values({
+        id,
+        username: email,
+        // Not used in dev bypass, but keeps schema constraints satisfied.
+        password: hashPassword(`dev-${id}`),
+      });
+    }
+
+    // Seed a minimal “welcome” job/application so the dashboard isn't empty.
+    const existingJobs = await db.select().from(jobs).where(eq(jobs.userId, id)).limit(1);
+    if (!existingJobs[0]) {
+      const inserted = await db
+        .insert(jobs)
+        .values({
+          userId: id,
+          title: "Sample: Operations / Sales Leader",
+          company: "Acme Corp",
+          location: "Remote",
+          salary: "$120k–$160k",
+          description: "This is sample data seeded for local development.",
+          matchScore: 78,
+          priority: "high",
+          source: "seed",
+          isActive: true,
+        })
+        .returning({ id: jobs.id });
+
+      const jobId = inserted[0]?.id;
+      if (jobId) {
+        await db.insert(applications).values({
+          userId: id,
+          jobId,
+          status: "pending",
+          notes: "Seeded application (local dev).",
+        });
+      }
+    }
+
+    // Seed a minimal resume profile row (some UI expects it).
+    const existingProfile = await db.select().from(resumeProfile).where(eq(resumeProfile.userId, id)).limit(1);
+    if (!existingProfile[0]) {
+      await db.insert(resumeProfile).values({
+        userId: id,
+        name,
+        email,
+        location: "Local Dev",
+        summary: "This profile was auto-created for local development (auth bypass).",
+      });
+    }
+
+    return authUserSchema.parse({
+      id: userRow.id,
+      email: userRow.email,
+      name: userRow.name ?? null,
+    });
+  })();
+
+  return devSeedPromise;
 }
 
 export function setupAuth(app: Express) {
@@ -87,6 +184,28 @@ export function setupAuth(app: Express) {
   app.use(session(sessionSettings));
   app.use(passport.initialize());
   app.use(passport.session());
+
+  // Dev-only auth bypass: inject a stable admin user when no session exists.
+  // Production behavior is unchanged.
+  app.use(async (req, res, next) => {
+    try {
+      if (!isDevAuthBypassEnabled()) return next();
+      if (!req.path.startsWith("/api")) return next();
+      if (req.isAuthenticated?.() && req.user) return next();
+
+      const safeUser = await ensureDevSeedUser();
+      (req as any).user = safeUser;
+      (req as any).isAuthenticated = () => true;
+      return next();
+    } catch (e: any) {
+      // In dev, surface a clear error instead of silently 401'ing.
+      const status = e?.status || 503;
+      return res.status(status).json({
+        message: "Dev auth bypass failed (database not ready/configured).",
+        detail: e?.message ?? String(e),
+      });
+    }
+  });
 
   passport.use(
     new LocalStrategy(

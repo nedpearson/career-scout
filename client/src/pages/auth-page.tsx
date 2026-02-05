@@ -71,6 +71,24 @@ export default function AuthPage() {
     }
   };
 
+  const onDemoLogin = async () => {
+    try {
+      setLoading(true);
+      const res = await apiRequest("POST", "/api/demo-login");
+      const user = await res.json();
+      setUser(user);
+      setLocation("/");
+    } catch (error: any) {
+      toast({
+        title: "Demo login failed",
+        description: error.message || "Demo mode may be disabled on this server",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/50 p-4">
       <Card className="w-full max-w-md">
@@ -152,6 +170,15 @@ export default function AuthPage() {
                   />
                   <Button type="submit" className="w-full" disabled={loginForm.formState.isSubmitting}>
                     Login
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full"
+                    onClick={onDemoLogin}
+                    data-testid="button-demo-login"
+                  >
+                    Demo mode
                   </Button>
                 </form>
               </Form>

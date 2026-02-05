@@ -8,6 +8,7 @@ import { db } from "./db";
 import { users as legacyUsers } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { prisma } from "./prisma";
+import { getJobtrackerDatabaseUrl } from "./prisma";
 import { hashPassword, verifyPassword } from "./auth/password";
 import { authLoginSchema, authRegisterSchema, authUserSchema, type AuthUser } from "@shared/models/auth";
 import { buildCareerScoutDatabaseUrl } from "./db-url";
@@ -26,6 +27,29 @@ function stripSchemaParam(urlString: string) {
   } catch {
     return urlString;
   }
+}
+
+function isTruthy(v: string | undefined) {
+  const raw = (v ?? "").toLowerCase().trim();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+function isDemoLoginEnabled() {
+  // In production, require explicit opt-in.
+  if (process.env.NODE_ENV === "production") {
+    return isTruthy(process.env.CAREER_SCOUT_ALLOW_DEMO_LOGIN) || isTruthy(process.env.JOBTRACKER_ALLOW_DEMO_LOGIN);
+  }
+  return !isTruthy(process.env.CAREER_SCOUT_ALLOW_DEMO_LOGIN)
+    ? true
+    : isTruthy(process.env.CAREER_SCOUT_ALLOW_DEMO_LOGIN);
+}
+
+function dbNotConfiguredError() {
+  const err: any = new Error(
+    "Database is not configured for auth. Attach Postgres and set DATABASE_URL (and optionally JOBTRACKER_DATABASE_URL).",
+  );
+  err.status = 503;
+  return err;
 }
 
 export function setupAuth(app: Express) {
@@ -69,6 +93,10 @@ export function setupAuth(app: Express) {
       { usernameField: "email", passwordField: "password" },
       async (email, password, done) => {
       try {
+        if (!getJobtrackerDatabaseUrl()) {
+          return done(dbNotConfiguredError());
+        }
+
         const normalizedEmail = String(email || "").trim().toLowerCase();
         if (!normalizedEmail || !password) {
           return done(null, false, { message: "Invalid email or password" });
@@ -166,6 +194,10 @@ export function setupAuth(app: Express) {
 
   app.post("/api/register", async (req, res, next) => {
     try {
+      if (!getJobtrackerDatabaseUrl()) {
+        return res.status(503).json({ message: "Database is not configured for registration." });
+      }
+
       const input = authRegisterSchema.parse(req.body);
       const email = input.email.toLowerCase();
 
@@ -211,7 +243,10 @@ export function setupAuth(app: Express) {
     }
 
     passport.authenticate("local", (err: any, user: any, info: any) => {
-      if (err) return next(err);
+      if (err) {
+        if (err?.status === 503) return res.status(503).json({ message: err.message });
+        return next(err);
+      }
       if (!user) {
         return res.status(401).json({ message: info?.message || "Invalid email or password" });
       }
@@ -230,6 +265,102 @@ export function setupAuth(app: Express) {
       });
     })(req, res, next);
   });
+
+  app.post("/api/demo-login", async (req, res, next) => {
+    try {
+      if (!isDemoLoginEnabled()) return res.status(404).json({ message: "Demo mode is disabled." });
+      if (!getJobtrackerDatabaseUrl()) return res.status(503).json({ message: "Database is not configured for demo login." });
+
+      const email = "demo@career-scout.local";
+      const existing = await prisma.user.findUnique({ where: { email } });
+      const userRow =
+        existing ??
+        (await prisma.user.create({
+          data: {
+            email,
+            name: "Demo User",
+            passwordHash: hashPassword(`demo-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+            rememberMe: true,
+            profile: { create: {} },
+          },
+        }));
+
+      const safeUser = authUserSchema.parse({
+        id: userRow.id,
+        email: userRow.email,
+        name: userRow.name ?? null,
+      });
+
+      // Bridge user for legacy Drizzle-backed features during migration.
+      const legacy = await db
+        .select()
+        .from(legacyUsers)
+        .where(eq(legacyUsers.id, safeUser.id))
+        .limit(1);
+      if (!legacy[0]) {
+        await db.insert(legacyUsers).values({
+          id: safeUser.id,
+          username: safeUser.email,
+          password: userRow.passwordHash ?? "",
+        });
+      }
+
+      req.login(safeUser, (err) => {
+        if (err) return next(err);
+        res.status(200).json(safeUser);
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Optional: bootstrap an admin account via env vars (idempotent).
+  // Set CAREER_SCOUT_ADMIN_EMAIL + CAREER_SCOUT_ADMIN_PASSWORD on Railway.
+  (async () => {
+    try {
+      const adminEmailRaw = process.env.CAREER_SCOUT_ADMIN_EMAIL?.trim();
+      const adminPassword = process.env.CAREER_SCOUT_ADMIN_PASSWORD?.trim();
+      if (!adminEmailRaw || !adminPassword) return;
+      if (!getJobtrackerDatabaseUrl()) return;
+
+      const adminEmail = adminEmailRaw.toLowerCase();
+      const existing = await prisma.user.findUnique({ where: { email: adminEmail } });
+      const userRow =
+        existing ??
+        (await prisma.user.create({
+          data: {
+            email: adminEmail,
+            name: process.env.CAREER_SCOUT_ADMIN_NAME?.trim() || "Admin",
+            passwordHash: hashPassword(adminPassword),
+            rememberMe: true,
+            profile: { create: {} },
+          },
+        }));
+
+      if (!userRow.passwordHash) {
+        await prisma.user.update({
+          where: { id: userRow.id },
+          data: { passwordHash: hashPassword(adminPassword) },
+        });
+      }
+
+      const legacy = await db
+        .select()
+        .from(legacyUsers)
+        .where(eq(legacyUsers.id, userRow.id))
+        .limit(1);
+      if (!legacy[0]) {
+        await db.insert(legacyUsers).values({
+          id: userRow.id,
+          username: userRow.email,
+          password: userRow.passwordHash ?? "",
+        });
+      }
+      console.log(`[auth] Bootstrapped admin user: ${adminEmail}`);
+    } catch (e: any) {
+      console.warn("[auth] Admin bootstrap failed (continuing):", e?.message ?? e);
+    }
+  })();
 
   app.post("/api/logout", (req, res, next) => {
     req.logout((err) => {

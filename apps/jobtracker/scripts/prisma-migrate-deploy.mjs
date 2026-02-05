@@ -5,6 +5,8 @@ import path from "node:path";
 // Prisma sometimes writes non-error status lines to stderr, so we pipe stderr -> stdout.
 
 function buildDatabaseUrl(env) {
+  const schemaRaw = typeof env.JOBTRACKER_DB_SCHEMA === "string" ? env.JOBTRACKER_DB_SCHEMA.trim() : "";
+  const schema = schemaRaw || "jobtracker";
   const databaseUrl = typeof env.JOBTRACKER_DATABASE_URL === "string"
     ? env.JOBTRACKER_DATABASE_URL.trim()
     : (typeof env.DATABASE_URL === "string" ? env.DATABASE_URL.trim() : "");
@@ -46,7 +48,7 @@ function buildDatabaseUrl(env) {
   const u = encodeURIComponent(user);
   const p = encodeURIComponent(password);
   const db = encodeURIComponent(database);
-  return `postgresql://${u}:${p}@${host}:${port}/${db}?schema=public`;
+  return `postgresql://${u}:${p}@${host}:${port}/${db}?schema=${encodeURIComponent(schema)}`;
 }
 
 function redactDbUrl(url) {

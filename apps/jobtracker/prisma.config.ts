@@ -2,6 +2,7 @@ import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
 function buildDatabaseUrl(): string {
+  const schema = (process.env.JOBTRACKER_DB_SCHEMA || "jobtracker").trim() || "jobtracker";
   const databaseUrl =
     (process.env.JOBTRACKER_DATABASE_URL ?? process.env.DATABASE_URL)?.trim();
   const candidates = [
@@ -42,7 +43,7 @@ function buildDatabaseUrl(): string {
   const u = encodeURIComponent(user);
   const p = encodeURIComponent(password);
   const db = encodeURIComponent(database);
-  return `postgresql://${u}:${p}@${host}:${port}/${db}?schema=public`;
+  return `postgresql://${u}:${p}@${host}:${port}/${db}?schema=${encodeURIComponent(schema)}`;
 }
 
 export default defineConfig({

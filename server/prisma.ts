@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { buildJobtrackerDatabaseUrl } from "./jobtracker-db-url";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
@@ -31,7 +30,15 @@ export const prisma: PrismaClient =
   (prismaUrl
     ? new PrismaClient({
         log: ["error", "warn"],
-        adapter: new PrismaPg({ connectionString: prismaUrl }),
+        // IMPORTANT:
+        // - We override the datasource URL at runtime because Prisma 7 config is
+        //   provided via `prisma.config.ts` (CLI), not in `schema.prisma`.
+        // - We intentionally do NOT use a driver adapter here. In practice we
+        //   have observed the adapter path ignore the `?schema=` query param and
+        //   query `public.*` tables even when migrations/db push target a
+        //   different schema. Using the standard engine + datasource override
+        //   ensures `?schema=jobtracker` is honored.
+        datasources: { db: { url: prismaUrl } },
       })
     : (console.warn(`[prisma] ${JOBTRACKER_DB_NOT_CONFIGURED_MESSAGE}`),
       makePrismaMissingProxy()));

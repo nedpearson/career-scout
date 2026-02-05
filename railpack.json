@@ -2,10 +2,16 @@
   "$schema": "https://schema.railpack.com",
   "steps": {
     "install": {
-      "commands": ["...", "npm --prefix apps/jobtracker ci"]
+      "commands": [
+        "npm ci",
+        "npm --prefix apps/jobtracker ci"
+      ]
     },
     "build": {
-      "commands": ["...", "npm run build", "npm --prefix apps/jobtracker run build"]
+      "commands": [
+        "npm run build",
+        "npm --prefix apps/jobtracker run build"
+      ]
     }
   },
   "deploy": {

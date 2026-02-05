@@ -1,0 +1,15 @@
+[phases.install]
+cmds = [
+  "npm ci",
+  "npm --prefix apps/jobtracker ci"
+]
+
+[phases.build]
+cmds = [
+  "npm run build",
+  "npm --prefix apps/jobtracker run build"
+]
+
+[start]
+cmd = "npm start"
+

@@ -1,0 +1,45 @@
+:root {
+  color-scheme: dark;
+  /* Brand tokens (HSL for easy alpha usage) */
+  --bg: 222 64% 6%; /* deep navy */
+  --surface: 222 46% 10%; /* slightly lighter navy */
+  --border: 220 28% 18%;
+  --text: 210 40% 98%; /* near-white */
+  --muted: 215 20% 72%; /* muted slate */
+
+  --primary: 214 100% 62%; /* electric blue */
+  --primary-fg: 222 64% 6%;
+
+  --success: 142 86% 50%; /* lime/green energy */
+  --success-fg: 222 64% 6%;
+
+  --accent: 27 96% 60%; /* warm orange sparkle */
+  --accent-fg: 222 64% 6%;
+
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 18px 55px rgba(0, 0, 0, 0.45);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(900px 520px at 12% 10%, hsl(var(--primary) / 0.16), transparent 58%),
+    radial-gradient(820px 520px at 90% 18%, hsl(var(--accent) / 0.10), transparent 60%),
+    radial-gradient(980px 560px at 55% 92%, hsl(var(--success) / 0.10), transparent 62%),
+    linear-gradient(180deg, hsl(var(--bg)) 0%, hsl(var(--bg)) 100%);
+  color: hsl(var(--text) / 0.92);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: hsl(var(--primary) / 0.35);
+  color: hsl(var(--text));
+}
+

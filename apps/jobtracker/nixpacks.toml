@@ -1,0 +1,4 @@
+[phases.install]
+# Avoid deprecated npm "production" config; omit dev deps explicitly.
+cmds = ["npm ci --omit=dev"]
+

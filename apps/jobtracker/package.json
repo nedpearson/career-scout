@@ -1,0 +1,58 @@
+{
+  "name": "job-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@10.9.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "node scripts/next-start.mjs",
+    "prestart": "node scripts/prisma-migrate-deploy.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "node scripts/prisma-migrate-deploy.mjs",
+    "prisma:dbpush": "prisma db push",
+    "prisma:studio": "prisma studio",
+    "postinstall": "prisma generate",
+    "prebuild": "prisma generate"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.10.0",
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/client": "^7.3.0",
+    "bcryptjs": "^3.0.2",
+    "clsx": "^2.1.1",
+    "dotenv": "^16.4.7",
+    "googleapis": "^148.0.0",
+    "next": "^16.1.6",
+    "next-auth": "^5.0.0-beta.30",
+    "openai": "^4.78.0",
+    "pg": "^8.13.6",
+    "prisma": "^7.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "rest-express": "file:../..",
+    "tailwind-merge": "^2.5.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.18.0",
+    "eslint-config-next": "^15.1.4",
+    "postcss": "^8.4.49",
+    "prettier": "^3.4.2",
+    "prettier-plugin-tailwindcss": "^0.6.10",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "hono": "4.11.7",
+    "lodash": "4.17.23"
+  }
+}

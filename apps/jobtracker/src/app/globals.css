@@ -1,0 +1,24 @@
+@import "../styles/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  /* Legacy helper classes kept for safe incremental refactors */
+  .glass {
+    @apply bg-surface/60 backdrop-blur;
+  }
+  .outline-soft {
+    @apply ring-1 ring-border/70;
+  }
+
+  /* New primitives */
+  .surface {
+    @apply bg-surface/70 ring-1 ring-border/60 shadow-elev-1;
+  }
+  .surface-hover {
+    @apply hover:bg-surface/85 hover:ring-border/80 transition;
+  }
+}
+

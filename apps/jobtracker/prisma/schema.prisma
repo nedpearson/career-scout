@@ -1,0 +1,286 @@
+generator client {
+  // Standard Prisma Client (connects via DATABASE_URL, no driver adapter required)
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: connection URL is configured via `prisma.config.ts` (datasource.url).
+}
+
+enum WorkMode {
+  ONSITE
+  REMOTE
+  HYBRID
+}
+
+enum ApplicationStage {
+  INTERESTED
+  APPLIED
+  RECRUITER_SCREEN
+  INTERVIEW
+  OFFER
+  CLOSED
+}
+
+enum EmailTone {
+  WARM
+  NEUTRAL
+  DIRECT
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  // Email is the primary login identifier for this app.
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  rememberMe    Boolean   @default(true)
+
+  accounts Account[]
+  sessions Session[]
+
+  profile      Profile?
+  skills       Skill[]
+  jobs         Job[]        @relation("UserJobs")
+  companies    Company[]    @relation("UserCompanies")
+  applications Application[]
+  outreach     OutreachEmail[]
+  contacts     Contact[]
+  applicationContacts ApplicationContact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Auth.js / NextAuth models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Profile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  headline         String?
+  summary          String?
+  location         String?
+  linkedinUrl      String?
+  desiredTitles    String?  // comma-separated for v0; will normalize later
+  desiredWorkModes String?  // comma-separated WorkMode values
+  minSalaryUsd     Int?
+  maxSalaryUsd     Int?
+  resumeText       String?  // paste resume for AI parsing (optional)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Skill {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  level       Int      @default(3) // 1-5
+  years       Float?
+  isCore      Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, name])
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  website     String?
+  linkedinUrl String?
+  location    String?
+  industry    String?
+  size        String?
+  notes       String?
+  aiSummary   String?
+  aiHowToHelp String?
+
+  user User @relation("UserCompanies", fields: [userId], references: [id], onDelete: Cascade)
+  jobs Job[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, name])
+}
+
+model Job {
+  id             String   @id @default(cuid())
+  userId         String
+  companyId      String?
+  source         String?
+  sourceUrl      String?
+  externalId     String?
+  linkedinJobUrl String?
+
+  title          String
+  location       String?
+  workMode       WorkMode?
+  salaryMinUsd   Int?
+  salaryMaxUsd   Int?
+  seniority      String?
+  employmentType String?
+
+  description    String?
+  requirements   String?
+
+  matchScore     Float?   // 0..100 cached
+  matchNotes     String?
+  aiDeepDive     String?  // JSON string: strengths/gaps/interview angles, etc.
+
+  user    User    @relation("UserJobs", fields: [userId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  applications Application[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, source, externalId])
+}
+
+model Application {
+  id             String           @id @default(cuid())
+  userId         String
+  jobId          String
+  stage          ApplicationStage @default(INTERESTED)
+  appliedAt      DateTime?
+  nextFollowUpAt DateTime?
+  contactName    String?
+  contactEmail   String?
+  linkedinContactUrl String?
+  linkedinThreadUrl  String?
+  notes          String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  outreach OutreachEmail[]
+  contacts ApplicationContact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, stage])
+}
+
+model OutreachEmail {
+  id             String    @id @default(cuid())
+  userId         String
+  applicationId  String?
+  toEmail        String?
+  ccEmail        String?
+  subject        String
+  bodyText       String
+  tone           EmailTone @default(NEUTRAL)
+  humanLevel     Int       @default(70) // 0..100
+  sentAt         DateTime?
+  gmailMessageId String?
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Contact {
+  id        String @id @default(cuid())
+  userId    String
+
+  name      String
+  company   String?
+  title     String?
+
+  email     String?
+  phone     String?
+
+  linkedinUrl  String?
+  facebookUrl  String?
+  instagramUrl String?
+
+  strength  Int    @default(3) // 1..5 (how strong is the relationship)
+  tags      String?            // comma-separated tags: "mutual,former coworker,referral"
+  lastContactedAt DateTime?
+
+  hiringSignal    Boolean  @default(false)
+  hiringPlatforms String?  // comma-separated: "linkedin,facebook,instagram"
+  hiringKeywords  String?  // comma-separated: "hiring,open roles,referral"
+  hiringNotes     String?
+  hiringLastSeenAt DateTime?
+
+  notes     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications ApplicationContact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, company])
+  @@index([userId, email])
+}
+
+model ApplicationContact {
+  id            String @id @default(cuid())
+  userId        String
+  applicationId String
+  contactId     String
+
+  // e.g. "mutual", "referral", "recruiter", "hiring_manager"
+  relationship  String?
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([applicationId, contactId])
+  @@index([userId, applicationId])
+}
+

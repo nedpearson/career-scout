@@ -1,0 +1,4 @@
+-- NOTE:
+-- This migration originally contained SQLite-specific `PRAGMA` + table redefinition SQL.
+-- The baseline Postgres migration now lives in `20260130003458/migration.sql`.
+-- Keep this migration as a no-op so migration history remains linear.

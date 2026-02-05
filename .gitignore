@@ -6,5 +6,10 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
+# Local env files (secrets)
+.env
+.env.local
+.env.*.local
+
 # Local-only user assets (often contain PII/secrets)
 attached_assets/

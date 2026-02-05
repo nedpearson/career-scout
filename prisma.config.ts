@@ -1,5 +1,10 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import { defineConfig } from "prisma/config";
+
+// Load local developer overrides first, then shared defaults.
+// Prisma CLI runs outside the server runtime, so we must load env files here too.
+dotenv.config({ path: ".env.local", override: false });
+dotenv.config({ path: ".env", override: false });
 
 function withSchema(urlString: string, schema: string): string {
   try {

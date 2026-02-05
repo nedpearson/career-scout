@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 /**
  * Minimal `.env` loader (no external deps).
  *
- * - Loads variables from project-root `.env` if present
+ * - Loads variables from project-root `.env.local` then `.env` (if present)
  * - Does **not** override existing `process.env` keys
  * - Supports simple `KEY=VALUE` lines with optional single/double quotes
  *
@@ -50,5 +50,7 @@ export function loadDotEnvFile(dotEnvPath = ".env") {
 }
 
 // Load once on import.
-loadDotEnvFile();
+// Priority: `.env.local` (developer machine) then `.env` (shared).
+loadDotEnvFile(".env.local");
+loadDotEnvFile(".env");
 

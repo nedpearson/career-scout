@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: career-scout-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Use the default "postgres" DB for init scripts, then create jobtracker_local.
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - career_scout_pgdata:/var/lib/postgresql/data
+      - ./scripts/db/local-init.sql:/docker-entrypoint-initdb.d/00-local-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  career_scout_pgdata:
+

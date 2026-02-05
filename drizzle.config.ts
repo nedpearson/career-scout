@@ -1,3 +1,4 @@
+import "./server/load-env";
 import { defineConfig } from "drizzle-kit";
 import { buildCareerScoutDatabaseUrl } from "./server/db-url";
 

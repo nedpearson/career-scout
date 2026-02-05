@@ -1,7 +1,9 @@
 import { defineConfig } from "drizzle-kit";
+import { buildCareerScoutDatabaseUrl } from "./server/db-url";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL, ensure the database is provisioned");
+const url = process.env.DATABASE_URL?.trim() || buildCareerScoutDatabaseUrl();
+if (!url) {
+  throw new Error("DATABASE_URL is missing and no PG* vars found (ensure Postgres is provisioned)");
 }
 
 export default defineConfig({
@@ -9,6 +11,6 @@ export default defineConfig({
   schema: "./shared/schema.ts",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL,
+    url,
   },
 });

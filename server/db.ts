@@ -1,14 +1,21 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "@shared/schema";
+import { buildCareerScoutDatabaseUrl } from "./db-url";
 
 const { Pool } = pg;
 
-if (!process.env.DATABASE_URL) {
+const effectiveDatabaseUrl =
+  process.env.DATABASE_URL?.trim() || buildCareerScoutDatabaseUrl();
+
+if (!effectiveDatabaseUrl) {
   throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
+    "Database is not configured. Set DATABASE_URL or attach a Postgres service (PGHOST/PGUSER/PGPASSWORD/PGDATABASE).",
   );
 }
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Ensure downstream tooling (e.g., drizzle-kit) sees DATABASE_URL when possible.
+process.env.DATABASE_URL = effectiveDatabaseUrl;
+
+export const pool = new Pool({ connectionString: effectiveDatabaseUrl });
 export const db = drizzle(pool, { schema });

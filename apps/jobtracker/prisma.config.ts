@@ -5,6 +5,15 @@ function buildDatabaseUrl(): string {
   const schema = (process.env.JOBTRACKER_DB_SCHEMA || "jobtracker").trim() || "jobtracker";
   const databaseUrl =
     (process.env.JOBTRACKER_DATABASE_URL ?? process.env.DATABASE_URL)?.trim();
+  const isValidPgUrl = (v: string) => {
+    if (!/^(postgresql|postgres):\/\//i.test(v)) return false;
+    try {
+      const u = new URL(v);
+      return Boolean(u.hostname);
+    } catch {
+      return false;
+    }
+  };
   const candidates = [
     databaseUrl,
     process.env.POSTGRES_URL,
@@ -19,7 +28,7 @@ function buildDatabaseUrl(): string {
 
   // If it's already a valid Postgres URL, keep it.
   for (const c of candidates) {
-    if (/^(postgresql|postgres):\/\//i.test(c)) return c;
+    if (c && isValidPgUrl(c)) return c;
   }
 
   // Railway/managed Postgres often expose discrete PG* env vars.

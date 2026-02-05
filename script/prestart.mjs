@@ -51,6 +51,20 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// Ensure pgcrypto is available for gen_random_uuid()
+try {
+  const pgModule = await import("pg");
+  const Pool = pgModule.default?.Pool ?? pgModule.Pool;
+  if (Pool) {
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await pool.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    await pool.end();
+    console.log("[prestart] pgcrypto extension OK");
+  }
+} catch (e) {
+  console.warn("[prestart] Unable to ensure pgcrypto extension (continuing):", e?.message ?? e);
+}
+
 console.log("[prestart] Running drizzle-kit push...");
 
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";

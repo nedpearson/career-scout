@@ -108,11 +108,12 @@ app.use((req, res, next) => {
   }
 
   const port = config.PORT;
+  const reusePort = process.platform !== "win32";
   httpServer.listen(
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      ...(reusePort ? { reusePort: true } : {}),
     },
     () => {
       log(`serving on port ${port}`);

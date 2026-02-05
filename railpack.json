@@ -3,14 +3,13 @@
   "steps": {
     "install": {
       "commands": [
-        "npm ci",
-        "npm --prefix apps/jobtracker ci"
+        "npm ci"
       ]
     },
     "build": {
       "commands": [
-        "npm run build",
-        "npm --prefix apps/jobtracker run build"
+        "npm run prisma:generate",
+        "npm run build"
       ]
     }
   },

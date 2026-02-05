@@ -13,7 +13,7 @@ function redact(u) {
 }
 
 function buildFromParts(parts) {
-  const { host, port, user, password, database } = parts;
+  const { host, port, user, password, database, schema } = parts;
   if (!host) return { ok: false, reason: "missing host" };
   if (!user) return { ok: false, reason: "missing user" };
   if (!database) return { ok: false, reason: "missing database" };
@@ -22,8 +22,12 @@ function buildFromParts(parts) {
   const encPass = password ? encodeURIComponent(password) : "";
   const auth = encPass ? `${encUser}:${encPass}` : `${encUser}`;
   const p = port ? String(port) : "5432";
-  const qs = "sslmode=require";
-  const url = `postgresql://${auth}@${host}:${p}/${encodeURIComponent(database)}?${qs}`;
+  const qs = new URLSearchParams();
+  // Safe default for hosted Postgres providers.
+  qs.set("sslmode", "require");
+  // Avoid collisions with Career Scout's Drizzle tables by default.
+  if (schema) qs.set("schema", schema);
+  const url = `postgresql://${auth}@${host}:${p}/${encodeURIComponent(database)}?${qs.toString()}`;
   return { ok: true, url };
 }
 
@@ -43,6 +47,8 @@ function isValidPostgresUrl(raw) {
 
 export function getDatabaseUrlOrThrow() {
   const raw = (process.env.DATABASE_URL || "").trim();
+  const defaultSchema = (process.env.JOBTRACKER_DB_SCHEMA || "jobtracker").trim() || "jobtracker";
+  const rawParseReason = raw ? isValidPostgresUrl(raw).reason : "empty";
 
   // 1) Try direct parse first
   if (raw) {
@@ -60,6 +66,7 @@ export function getDatabaseUrlOrThrow() {
   const candidates = [
     {
       name: "PG*",
+      schema: defaultSchema,
       host: process.env.PGHOST,
       port: process.env.PGPORT,
       user: process.env.PGUSER,
@@ -68,6 +75,7 @@ export function getDatabaseUrlOrThrow() {
     },
     {
       name: "POSTGRES_*",
+      schema: defaultSchema,
       host: process.env.POSTGRES_HOST,
       port: process.env.POSTGRES_PORT,
       user: process.env.POSTGRES_USER,
@@ -76,6 +84,7 @@ export function getDatabaseUrlOrThrow() {
     },
     {
       name: "DB_*",
+      schema: defaultSchema,
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
       user: process.env.DB_USER,
@@ -95,6 +104,7 @@ export function getDatabaseUrlOrThrow() {
   // 3) Hard fail with actionable message
   const present = {
     DATABASE_URL: Boolean(raw),
+    DATABASE_URL_PARSE: raw ? rawParseReason : "empty",
     PGHOST: Boolean(process.env.PGHOST),
     PGPORT: Boolean(process.env.PGPORT),
     PGUSER: Boolean(process.env.PGUSER),
@@ -112,14 +122,31 @@ export function getDatabaseUrlOrThrow() {
     DB_NAME: Boolean(process.env.DB_NAME),
   };
 
+  const missing = (group) => {
+    const out = [];
+    if (!group.host) out.push("host");
+    if (!group.user) out.push("user");
+    if (!group.database) out.push("database");
+    if (!group.port) out.push("port(optional)");
+    if (!group.password) out.push("password(optional)");
+    return out;
+  };
+
+  const missingByGroup = Object.fromEntries(
+    candidates.map((c) => [c.name, missing(c)]),
+  );
+
   const example = "postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require";
   const msg =
     "[db] FATAL: No valid DATABASE_URL and cannot construct one from env parts. " +
     "Set DATABASE_URL in Railway OR set PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE. " +
-    "Present=" +
+    "MissingByGroup=" +
+    JSON.stringify(missingByGroup) +
+    " Present=" +
     JSON.stringify(present) +
     " Example=" +
-    example;
+    example +
+    " NOTE=Do not paste psql commands; DATABASE_URL must be a URL.";
 
   const err = new Error(msg);
   err.code = "DB_URL_INVALID";

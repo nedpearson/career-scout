@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { buildJobtrackerDatabaseUrl } from "./jobtracker-db-url";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
@@ -23,6 +24,25 @@ function makePrismaMissingProxy(): PrismaClient {
   return new Proxy(function () {}, handler) as unknown as PrismaClient;
 }
 
+function withPgSearchPath(urlString: string, schema: string): string {
+  // Prisma's `?schema=` param is interpreted by Prisma's engine/CLI, but when
+  // using driver adapters the underlying `pg` connection still defaults its
+  // search_path to `public`. Force the desired schema at the Postgres level.
+  //
+  // Connection string parameter `options=-c search_path=<schema>` is supported
+  // by Postgres/libpq and parsed by the `pg` driver.
+  try {
+    const u = new URL(urlString);
+    const desired = `-c search_path=${schema}`;
+    const existing = u.searchParams.get("options");
+    if (!existing) u.searchParams.set("options", desired);
+    else if (!existing.includes("search_path=")) u.searchParams.set("options", `${existing} ${desired}`.trim());
+    return u.toString();
+  } catch {
+    return urlString;
+  }
+}
+
 const prismaUrl = getJobtrackerDatabaseUrl();
 
 export const prisma: PrismaClient =
@@ -30,15 +50,12 @@ export const prisma: PrismaClient =
   (prismaUrl
     ? new PrismaClient({
         log: ["error", "warn"],
-        // IMPORTANT:
-        // - We override the datasource URL at runtime because Prisma 7 config is
-        //   provided via `prisma.config.ts` (CLI), not in `schema.prisma`.
-        // - We intentionally do NOT use a driver adapter here. In practice we
-        //   have observed the adapter path ignore the `?schema=` query param and
-        //   query `public.*` tables even when migrations/db push target a
-        //   different schema. Using the standard engine + datasource override
-        //   ensures `?schema=jobtracker` is honored.
-        datasources: { db: { url: prismaUrl } },
+        adapter: new PrismaPg({
+          connectionString: withPgSearchPath(
+            prismaUrl,
+            (process.env.JOBTRACKER_DB_SCHEMA || "jobtracker").trim() || "jobtracker",
+          ),
+        }),
       })
     : (console.warn(`[prisma] ${JOBTRACKER_DB_NOT_CONFIGURED_MESSAGE}`),
       makePrismaMissingProxy()));

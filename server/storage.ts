@@ -191,7 +191,7 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(jobs, eq(applications.jobId, jobs.id))
       .orderBy(desc(applications.createdAt));
     
-    return result.map(r => ({
+    return result.map((r: any) => ({
       ...r.applications,
       job: r.jobs || undefined,
     }));
@@ -336,9 +336,9 @@ export class DatabaseStorage implements IStorage {
     const allApps = await db.select().from(applications).where(eq(applications.userId, userId));
     const allActions = await db.select().from(dailyActions).where(and(eq(dailyActions.userId, userId), eq(dailyActions.isCompleted, false)));
 
-    const appliedCount = allApps.filter(a => a.status === "applied" || a.status === "interviewing" || a.status === "offered").length;
-    const interviewCount = allApps.filter(a => a.status === "interviewing").length;
-    const responseCount = allApps.filter(a => a.responseReceived).length;
+    const appliedCount = allApps.filter((a: any) => a.status === "applied" || a.status === "interviewing" || a.status === "offered").length;
+    const interviewCount = allApps.filter((a: any) => a.status === "interviewing").length;
+    const responseCount = allApps.filter((a: any) => a.responseReceived).length;
     const responseRate = appliedCount > 0 ? Math.round((responseCount / appliedCount) * 100) : 0;
 
     return {
@@ -507,7 +507,7 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(calendarEvents.startTime);
     
-    return events.filter(event => {
+    return events.filter((event: any) => {
       const reminderTime = new Date(event.startTime);
       reminderTime.setMinutes(reminderTime.getMinutes() - (event.reminderMinutes || 30));
       return reminderTime <= now && new Date(event.startTime) > now;

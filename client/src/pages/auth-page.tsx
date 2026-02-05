@@ -1,6 +1,6 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertUserSchema, InsertUser } from "@shared/schema";
+import { authLoginSchema, authRegisterSchema, type AuthLogin, type AuthRegister } from "@shared/models/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -12,16 +12,12 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { z } from "zod";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
 import { InstallAppDialog } from "@/components/install-app-dialog";
 import { Smartphone } from "lucide-react";
 
-const loginSchema = insertUserSchema.extend({
-  rememberMe: z.boolean().optional(),
-});
-
-type LoginFormData = z.infer<typeof loginSchema>;
+const loginSchema = authLoginSchema;
+type LoginFormData = AuthLogin;
 
 export default function AuthPage() {
   const [, setLocation] = useLocation();
@@ -31,12 +27,12 @@ export default function AuthPage() {
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { username: "", password: "", rememberMe: true },
+    defaultValues: { email: "", password: "", rememberMe: true },
   });
 
-  const registerForm = useForm<InsertUser>({
-    resolver: zodResolver(insertUserSchema),
-    defaultValues: { username: "", password: "" },
+  const registerForm = useForm<AuthRegister>({
+    resolver: zodResolver(authRegisterSchema),
+    defaultValues: { email: "", name: "", password: "" },
   });
 
   const onLogin = async (data: LoginFormData) => {
@@ -49,7 +45,7 @@ export default function AuthPage() {
     } catch (error: any) {
       toast({
         title: "Login failed",
-        description: error.message || "Invalid username or password",
+        description: error.message || "Invalid email or password",
         variant: "destructive",
       });
     } finally {
@@ -57,7 +53,7 @@ export default function AuthPage() {
     }
   };
 
-  const onRegister = async (data: InsertUser) => {
+  const onRegister = async (data: AuthRegister) => {
     try {
       setLoading(true);
       const res = await apiRequest("POST", "/api/register", data);
@@ -112,7 +108,7 @@ export default function AuthPage() {
                 <form onSubmit={loginForm.handleSubmit(onLogin)} className="space-y-4">
                   <FormField
                     control={loginForm.control}
-                    name="username"
+                    name="email"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Email</FormLabel>
@@ -166,7 +162,7 @@ export default function AuthPage() {
                 <form onSubmit={registerForm.handleSubmit(onRegister)} className="space-y-4">
                   <FormField
                     control={registerForm.control}
-                    name="username"
+                    name="email"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Email</FormLabel>
@@ -179,12 +175,25 @@ export default function AuthPage() {
                   />
                   <FormField
                     control={registerForm.control}
+                    name="name"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Name (optional)</FormLabel>
+                        <FormControl>
+                          <Input type="text" placeholder="Your name" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={registerForm.control}
                     name="password"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Password</FormLabel>
                         <FormControl>
-                          <Input type="password" placeholder="Choose a password" {...field} />
+                          <Input type="password" placeholder="At least 8 characters" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

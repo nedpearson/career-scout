@@ -2,21 +2,54 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express, NextFunction, Request, Response } from "express";
 import session from "express-session";
-import { storage } from "./storage";
-import { User as SelectUser } from "@shared/schema";
+import connectPgSimple from "connect-pg-simple";
+import pg from "pg";
+import { db } from "./db";
+import { users as legacyUsers } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import { prisma } from "./prisma";
+import { hashPassword, verifyPassword } from "./auth/password";
+import { authLoginSchema, authRegisterSchema, authUserSchema, type AuthUser } from "@shared/models/auth";
+import { buildCareerScoutDatabaseUrl } from "./db-url";
 
 declare global {
   namespace Express {
-    interface User extends SelectUser {}
+    interface User extends AuthUser {}
+  }
+}
+
+function stripSchemaParam(urlString: string) {
+  try {
+    const u = new URL(urlString);
+    u.searchParams.delete("schema");
+    return u.toString();
+  } catch {
+    return urlString;
   }
 }
 
 export function setupAuth(app: Express) {
+  const { Pool } = pg;
+  const PgSession = connectPgSimple(session);
+
+  // Prefer the existing Career Scout DATABASE_URL for sessions (public schema).
+  const sessionDbUrl = stripSchemaParam(
+    process.env.DATABASE_URL?.trim() || buildCareerScoutDatabaseUrl() || "",
+  );
+
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || "headhunter-secret",
     resave: false,
     saveUninitialized: false,
-    store: undefined, // Default in-memory store for now, can be swapped for connect-pg-simple
+    store: sessionDbUrl
+      ? new PgSession({
+          pool: new Pool({ connectionString: sessionDbUrl }),
+          // Keep sessions in public so they work even if the JobTracker schema isn't provisioned yet.
+          schemaName: (process.env.SESSION_DB_SCHEMA || "public").trim() || "public",
+          tableName: "career_scout_sessions",
+          createTableIfMissing: true,
+        })
+      : undefined, // fallback to MemoryStore if DB isn't configured
     cookie: {
       secure: app.get("env") === "production",
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
@@ -32,24 +65,100 @@ export function setupAuth(app: Express) {
   app.use(passport.session());
 
   passport.use(
-    new LocalStrategy(async (username, password, done) => {
+    new LocalStrategy(
+      { usernameField: "email", passwordField: "password" },
+      async (email, password, done) => {
       try {
-        const user = await storage.getUserByUsername(username);
-        if (!user || user.password !== password) {
-          return done(null, false, { message: "Invalid username or password" });
+        const normalizedEmail = String(email || "").trim().toLowerCase();
+        if (!normalizedEmail || !password) {
+          return done(null, false, { message: "Invalid email or password" });
         }
-        return done(null, user);
+
+        // Primary: Prisma user (JobTracker schema)
+        const prismaUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        if (prismaUser?.passwordHash) {
+          const ok = verifyPassword(password, prismaUser.passwordHash);
+          if (!ok) return done(null, false, { message: "Invalid email or password" });
+
+          const safeUser = authUserSchema.parse({
+            id: prismaUser.id,
+            email: prismaUser.email,
+            name: prismaUser.name ?? null,
+          });
+
+          // Ensure legacy Drizzle user exists for existing Career Scout tables during migration.
+          const legacy = await db
+            .select()
+            .from(legacyUsers)
+            .where(eq(legacyUsers.id, safeUser.id))
+            .limit(1);
+          if (!legacy[0]) {
+            await db.insert(legacyUsers).values({
+              id: safeUser.id,
+              username: safeUser.email,
+              password: prismaUser.passwordHash,
+            });
+          }
+
+          return done(null, safeUser);
+        }
+
+        // Secondary (migration bridge): legacy user in Drizzle (public schema)
+        const legacy = await db
+          .select()
+          .from(legacyUsers)
+          .where(eq(legacyUsers.username, normalizedEmail))
+          .limit(1);
+        const legacyUser = legacy[0];
+        if (!legacyUser) return done(null, false, { message: "Invalid email or password" });
+
+        const legacyPassword = legacyUser.password || "";
+        const legacyOk = legacyPassword.startsWith("$2")
+          ? verifyPassword(password, legacyPassword)
+          : legacyPassword === password;
+        if (!legacyOk) return done(null, false, { message: "Invalid email or password" });
+
+        // Create Prisma user with same id so existing foreign keys remain valid.
+        const created = await prisma.user.create({
+          data: {
+            id: legacyUser.id,
+            email: legacyUser.username,
+            passwordHash: hashPassword(password),
+            rememberMe: true,
+          },
+        });
+
+        const safeUser = authUserSchema.parse({
+          id: created.id,
+          email: created.email,
+          name: created.name ?? null,
+        });
+
+        // Upgrade legacy stored password to a hash (no longer plain-text).
+        await db
+          .update(legacyUsers)
+          .set({ password: created.passwordHash ?? legacyUser.password })
+          .where(eq(legacyUsers.id, legacyUser.id));
+
+        return done(null, safeUser);
       } catch (err) {
         return done(err);
       }
-    }),
+      },
+    ),
   );
 
   passport.serializeUser((user, done) => done(null, user.id));
   passport.deserializeUser(async (id: string, done) => {
     try {
-      const user = await storage.getUser(id);
-      done(null, user);
+      const prismaUser = await prisma.user.findUnique({ where: { id } });
+      if (!prismaUser) return done(null, false);
+      const safeUser = authUserSchema.parse({
+        id: prismaUser.id,
+        email: prismaUser.email,
+        name: prismaUser.name ?? null,
+      });
+      done(null, safeUser);
     } catch (err) {
       done(err);
     }
@@ -57,15 +166,38 @@ export function setupAuth(app: Express) {
 
   app.post("/api/register", async (req, res, next) => {
     try {
-      const existingUser = await storage.getUserByUsername(req.body.username);
-      if (existingUser) {
-        return res.status(400).send("Username already exists");
-      }
+      const input = authRegisterSchema.parse(req.body);
+      const email = input.email.toLowerCase();
 
-      const user = await storage.createUser(req.body);
-      req.login(user, (err) => {
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) return res.status(400).send("Email already exists");
+
+      const created = await prisma.user.create({
+        data: {
+          email,
+          name: input.name || null,
+          passwordHash: hashPassword(input.password),
+          rememberMe: true,
+          profile: { create: {} },
+        },
+      });
+
+      // Bridge user for legacy Drizzle-backed features during migration.
+      await db.insert(legacyUsers).values({
+        id: created.id,
+        username: created.email,
+        password: created.passwordHash ?? "",
+      });
+
+      const safeUser = authUserSchema.parse({
+        id: created.id,
+        email: created.email,
+        name: created.name ?? null,
+      });
+
+      req.login(safeUser, (err) => {
         if (err) return next(err);
-        res.status(201).json(user);
+        res.status(201).json(safeUser);
       });
     } catch (err) {
       next(err);
@@ -73,16 +205,26 @@ export function setupAuth(app: Express) {
   });
 
   app.post("/api/login", (req, res, next) => {
+    const parsed = authLoginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid login payload" });
+    }
+
     passport.authenticate("local", (err: any, user: any, info: any) => {
       if (err) return next(err);
       if (!user) {
-        return res.status(401).json({ message: info?.message || "Invalid username or password" });
+        return res.status(401).json({ message: info?.message || "Invalid email or password" });
       }
       req.login(user, (loginErr) => {
         if (loginErr) return next(loginErr);
-        // If remember me is set, extend session to 90 days
-        if (req.body.rememberMe && req.session) {
-          req.session.cookie.maxAge = 90 * 24 * 60 * 60 * 1000;
+        // Align with JobTracker behavior:
+        // - rememberMe: 30 days
+        // - otherwise: 12 hours
+        if (req.session) {
+          const rememberMe = Boolean((req.body as any)?.rememberMe);
+          req.session.cookie.maxAge = rememberMe
+            ? 30 * 24 * 60 * 60 * 1000
+            : 12 * 60 * 60 * 1000;
         }
         res.status(200).json(user);
       });

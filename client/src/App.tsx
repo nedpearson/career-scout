@@ -24,7 +24,7 @@ import Actions from "@/pages/actions";
 import Strategy from "@/pages/strategy";
 import Settings from "@/pages/settings";
 import AuthPage from "@/pages/auth-page";
-import JobTrackerBridge from "@/pages/jobtracker";
+import JobTrackerPage from "@/pages/jobtracker";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 
@@ -32,8 +32,8 @@ function AuthenticatedRoutes() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
-      <Route path="/jobtracker/:rest*" component={JobTrackerBridge} />
-      <Route path="/jobtracker" component={JobTrackerBridge} />
+      <Route path="/jobtracker/:rest*" component={JobTrackerPage} />
+      <Route path="/jobtracker" component={JobTrackerPage} />
       <Route path="/search" component={JobSearch} />
       <Route path="/applications" component={Applications} />
       <Route path="/calendar" component={CalendarPage} />

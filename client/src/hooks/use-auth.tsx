@@ -1,10 +1,10 @@
 import { create } from "zustand";
-import { User } from "@shared/schema";
+import type { AuthUser } from "@shared/models/auth";
 
 interface AuthState {
-  user: User | null;
+  user: AuthUser | null;
   isLoading: boolean;
-  setUser: (user: User | null) => void;
+  setUser: (user: AuthUser | null) => void;
   setLoading: (isLoading: boolean) => void;
 }
 

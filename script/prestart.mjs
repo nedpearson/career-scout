@@ -1,8 +1,20 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 function shouldRunDbPush() {
   const v = (process.env.CAREER_SCOUT_DB_PUSH_ON_START ?? "").toLowerCase().trim();
   return v === "true" || v === "1" || v === "yes";
+}
+
+function withSchema(urlString, schema) {
+  try {
+    const u = new URL(urlString);
+    u.searchParams.set("schema", schema);
+    return u.toString();
+  } catch {
+    return urlString;
+  }
 }
 
 function buildDatabaseUrlFromEnv(env) {
@@ -37,6 +49,34 @@ function buildDatabaseUrlFromEnv(env) {
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
 }
 
+function hasPrismaMigrations() {
+  try {
+    const pUrl = new URL("../prisma/migrations", import.meta.url);
+    const p = fileURLToPath(pUrl);
+    if (!fs.existsSync(p)) return false;
+    const entries = fs.readdirSync(p);
+    return entries.some((e) => !e.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+
+function runNpmScript(scriptName) {
+  return new Promise((resolve, reject) => {
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+    const child = spawn(npmCmd, ["run", scriptName], {
+      stdio: "inherit",
+      env: process.env,
+      shell: process.platform === "win32",
+    });
+    child.on("exit", (code, signal) => {
+      if (signal) return reject(new Error(`${scriptName} terminated by signal ${signal}`));
+      if (code === 0) return resolve();
+      reject(new Error(`${scriptName} exited with code ${code ?? 1}`));
+    });
+  });
+}
+
 if (!shouldRunDbPush()) {
   process.exit(0);
 }
@@ -44,6 +84,12 @@ if (!shouldRunDbPush()) {
 if (!process.env.DATABASE_URL) {
   const built = buildDatabaseUrlFromEnv(process.env);
   if (built) process.env.DATABASE_URL = built;
+}
+
+// Ensure Prisma (JobTracker) gets an explicit schema URL, so we don't collide with Drizzle/public.
+if (!process.env.JOBTRACKER_DATABASE_URL && process.env.DATABASE_URL) {
+  const schema = (process.env.JOBTRACKER_DB_SCHEMA || "jobtracker").trim() || "jobtracker";
+  process.env.JOBTRACKER_DATABASE_URL = withSchema(process.env.DATABASE_URL, schema);
 }
 
 if (!process.env.DATABASE_URL) {
@@ -65,20 +111,26 @@ try {
   console.warn("[prestart] Unable to ensure pgcrypto extension (continuing):", e?.message ?? e);
 }
 
-console.log("[prestart] Running drizzle-kit push...");
+try {
+  console.log("[prestart] Running drizzle-kit push...");
+  await runNpmScript("db:push");
 
-const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-const child = spawn(npmCmd, ["run", "db:push"], {
-  stdio: "inherit",
-  env: process.env,
-  shell: process.platform === "win32",
-});
-
-child.on("exit", (code, signal) => {
-  if (signal) {
-    console.error(`[prestart] drizzle-kit push terminated by signal ${signal}`);
-    process.exit(1);
+  if (process.env.JOBTRACKER_DATABASE_URL) {
+    // Prefer migrations if present, otherwise fall back to db push.
+    if (hasPrismaMigrations()) {
+      console.log("[prestart] Running prisma migrate deploy...");
+      await runNpmScript("prisma:migrate:deploy");
+    } else {
+      console.log("[prestart] Running prisma db push (no migrations yet)...");
+      await runNpmScript("prisma:dbpush");
+    }
+  } else {
+    console.warn("[prestart] JOBTRACKER_DATABASE_URL not set; skipping Prisma schema sync.");
   }
-  process.exit(typeof code === "number" ? code : 1);
-});
+
+  process.exit(0);
+} catch (e) {
+  console.error("[prestart] Database setup failed:", e?.message ?? e);
+  process.exit(1);
+}
 

@@ -8,14 +8,39 @@ const { Pool } = pg;
 const effectiveDatabaseUrl =
   process.env.DATABASE_URL?.trim() || buildCareerScoutDatabaseUrl();
 
-if (!effectiveDatabaseUrl) {
-  throw new Error(
-    "Database is not configured. Set DATABASE_URL or attach a Postgres service (PGHOST/PGUSER/PGPASSWORD/PGDATABASE).",
-  );
+const DB_NOT_CONFIGURED_MESSAGE =
+  "Database is not configured. Set DATABASE_URL or attach a Postgres service (PGHOST/PGUSER/PGPASSWORD/PGDATABASE).";
+
+/**
+ * Important: do **not** throw at import-time.
+ *
+ * Some deploy environments boot the web process before the database is attached
+ * (or before secrets are injected), and crashing on module import causes a
+ * restart loop that makes debugging harder.
+ *
+ * Instead we export a proxy `db` that throws *when used* if the DB isn't set.
+ */
+function makeDbMissingProxy(): any {
+  const err = () => new Error(DB_NOT_CONFIGURED_MESSAGE);
+  const handler: ProxyHandler<object> = {
+    get() {
+      throw err();
+    },
+    apply() {
+      throw err();
+    },
+  };
+  return new Proxy(function () {}, handler);
 }
 
-// Ensure downstream tooling (e.g., drizzle-kit) sees DATABASE_URL when possible.
-process.env.DATABASE_URL = effectiveDatabaseUrl;
+export const pool = effectiveDatabaseUrl
+  ? new Pool({ connectionString: effectiveDatabaseUrl })
+  : undefined;
 
-export const pool = new Pool({ connectionString: effectiveDatabaseUrl });
-export const db = drizzle(pool, { schema });
+export const db = effectiveDatabaseUrl
+  ? (() => {
+      // Ensure downstream tooling (e.g., drizzle-kit) sees DATABASE_URL when possible.
+      process.env.DATABASE_URL = effectiveDatabaseUrl;
+      return drizzle(pool!, { schema });
+    })()
+  : (console.warn(`[db] ${DB_NOT_CONFIGURED_MESSAGE}`), makeDbMissingProxy());

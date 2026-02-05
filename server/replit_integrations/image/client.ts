@@ -2,10 +2,36 @@ import fs from "node:fs";
 import OpenAI, { toFile } from "openai";
 import { Buffer } from "node:buffer";
 
-export const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+let cachedOpenAI: OpenAI | undefined;
+function getOpenAIClient(): OpenAI {
+  const apiKey =
+    process.env.AI_INTEGRATIONS_OPENAI_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim();
+
+  if (!apiKey) {
+    const err: any = new Error(
+      "OpenAI is not configured. Set AI_INTEGRATIONS_OPENAI_API_KEY (or OPENAI_API_KEY) to enable image generation.",
+    );
+    err.status = 503;
+    throw err;
+  }
+
+  if (!cachedOpenAI) {
+    cachedOpenAI = new OpenAI({
+      apiKey,
+      baseURL:
+        process.env.AI_INTEGRATIONS_OPENAI_BASE_URL?.trim() ||
+        process.env.OPENAI_BASE_URL?.trim(),
+    });
+  }
+
+  return cachedOpenAI;
+}
+
+// Exported wrapper so route modules don't trigger OpenAI config at import-time.
+export function getImageOpenAIClient(): OpenAI {
+  return getOpenAIClient();
+}
 
 /**
  * Generate an image and return as Buffer.
@@ -15,7 +41,7 @@ export async function generateImageBuffer(
   prompt: string,
   size: "1024x1024" | "512x512" | "256x256" = "1024x1024"
 ): Promise<Buffer> {
-  const response = await openai.images.generate({
+  const response = await getOpenAIClient().images.generate({
     model: "gpt-image-1",
     prompt,
     size,
@@ -42,7 +68,7 @@ export async function editImages(
     )
   );
 
-  const response = await openai.images.edit({
+  const response = await getOpenAIClient().images.edit({
     model: "gpt-image-1",
     image: images,
     prompt,

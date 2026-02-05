@@ -47,6 +47,14 @@ const toolsItems = [
 export function AppSidebar() {
   const [location, setLocation] = useLocation();
   const { user, setUser } = useAuth();
+  const displayName = user?.name?.trim() || user?.email || "User";
+  const initials =
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p) => p[0]?.toUpperCase())
+      .join("") || "U";
 
   const handleLogout = async () => {
     await apiRequest("POST", "/api/logout");
@@ -116,10 +124,10 @@ export function AppSidebar() {
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-3 px-1">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground text-sm font-medium uppercase">
-              {user?.username?.substring(0, 2) || "NP"}
+              {initials}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{user?.username || "Ned Pearson"}</p>
+              <p className="text-sm font-medium truncate">{displayName}</p>
               <p className="text-xs text-muted-foreground truncate">Baton Rouge, LA</p>
             </div>
           </div>

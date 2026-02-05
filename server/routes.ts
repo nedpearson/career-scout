@@ -21,7 +21,7 @@ import {
 import OpenAI from "openai";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { loopWatchdogMiddleware } from "./middleware/loop-watchdog";
-import { setupJobTrackerIntegration } from "./jobtracker";
+import { registerJobtrackerApi } from "./jobtracker-api";
 import multer from "multer";
 import mammoth from "mammoth";
 import { v4 as uuidv4 } from "uuid";
@@ -31,10 +31,32 @@ import { z } from "zod";
 import * as pdfParseModule from "pdf-parse";
 const pdfParse = (pdfParseModule as any).default || pdfParseModule;
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+let cachedOpenAI: OpenAI | undefined;
+function getOpenAIClient(): OpenAI {
+  // Prefer Replit AI integration env vars; fall back to standard OpenAI env vars.
+  const apiKey =
+    process.env.AI_INTEGRATIONS_OPENAI_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim();
+
+  if (!apiKey) {
+    const err: any = new Error(
+      "OpenAI is not configured. Set AI_INTEGRATIONS_OPENAI_API_KEY (or OPENAI_API_KEY) to enable AI features.",
+    );
+    err.status = 503;
+    throw err;
+  }
+
+  if (!cachedOpenAI) {
+    cachedOpenAI = new OpenAI({
+      apiKey,
+      baseURL:
+        process.env.AI_INTEGRATIONS_OPENAI_BASE_URL?.trim() ||
+        process.env.OPENAI_BASE_URL?.trim(),
+    });
+  }
+
+  return cachedOpenAI;
+}
 
 const RESUME_CONTEXT = `
 Candidate: Gerald (Ned) Thomas Pearson Jr
@@ -148,7 +170,7 @@ async function extractResumeText(opts: {
 }
 
 async function runResumeAnalysis(resumeContent: string, resumeFileName: string) {
-  const completion = await openai.chat.completions.create({
+  const completion = await getOpenAIClient().chat.completions.create({
     model: "gpt-4o",
     messages: [
       {
@@ -404,7 +426,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
       Candidate Info: ${profile?.summary || RESUME_CONTEXT}
       Return JSON: { "jobs": [{ "title": "...", "company": "...", "location": "...", "description": "...", "salary": "...", "matchScore": 0-100 }] }`;
 
-      const completion = await openai.chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "system", content: "You are an AI job search assistant. Return valid JSON only." }, { role: "user", content: prompt }],
         response_format: { type: "json_object" },
@@ -490,7 +512,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.post("/api/daily-actions/generate", isAuthenticated, async (req, res, next) => {
     try {
-      const completion = await openai.chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "system", content: "Generate 3-5 daily job search actions for the user. Return JSON: { \"actions\": [{ \"title\": \"...\", \"priority\": \"high|medium|low\" }] }" }],
         response_format: { type: "json_object" },
@@ -537,7 +559,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
       const { type, recipientName, jobTitle, companyName } = req.body;
       const prompt = `Generate a ${type} outreach script for ${recipientName} regarding the ${jobTitle} role at ${companyName}. Return JSON: { \"subject\": \"...\", \"content\": \"...\" }`;
 
-      const completion = await openai.chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "system", content: "You are an expert outreach assistant. Return valid JSON only." }, { role: "user", content: prompt }],
         response_format: { type: "json_object" },
@@ -723,7 +745,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.post("/api/weekly-plans/generate", isAuthenticated, async (req, res) => {
     try {
-      const completion = await openai.chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
@@ -816,7 +838,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
         concise: "Create a concise, one-page version of this resume. Keep the most impactful points and remove fluff.",
       };
 
-      const completion = await openai.chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
@@ -848,8 +870,8 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     res.status(204).end();
   });
 
-  // JobTracker integration boundary (isolated sub-app mounted at /jobtracker)
-  setupJobTrackerIntegration(app);
+  // JobTracker API surface (Prisma-backed, served directly by Express).
+  registerJobtrackerApi(app);
 
   return;
 }

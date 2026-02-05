@@ -23,10 +23,8 @@ import {
   Compass,
   CalendarDays,
   Sparkles,
-  LogOut,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest } from "@/lib/queryClient";
 
 const mainNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -45,8 +43,8 @@ const toolsItems = [
 ];
 
 export function AppSidebar() {
-  const [location, setLocation] = useLocation();
-  const { user, setUser } = useAuth();
+  const [location] = useLocation();
+  const { user } = useAuth();
   const displayName = user?.name?.trim() || user?.email || "User";
   const initials =
     displayName
@@ -55,12 +53,6 @@ export function AppSidebar() {
       .slice(0, 2)
       .map((p) => p[0]?.toUpperCase())
       .join("") || "U";
-
-  const handleLogout = async () => {
-    await apiRequest("POST", "/api/logout");
-    setUser(null);
-    setLocation("/auth");
-  };
 
   return (
     <Sidebar>
@@ -131,17 +123,6 @@ export function AppSidebar() {
               <p className="text-xs text-muted-foreground truncate">Baton Rouge, LA</p>
             </div>
           </div>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton 
-                onClick={handleLogout}
-                className="text-muted-foreground hover:text-destructive"
-              >
-                <LogOut className="h-4 w-4" />
-                <span>Logout</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
         </div>
       </SidebarFooter>
     </Sidebar>

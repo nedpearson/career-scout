@@ -74,7 +74,11 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       toast({ title: "Search complete!", description: "New job opportunities have been found" });
     } catch (error) {
-      toast({ title: "Search failed", description: "Please try again later", variant: "destructive" });
+      toast({
+        title: "Search failed",
+        description: String((error as any)?.message ?? error ?? "Unknown error"),
+        variant: "destructive",
+      });
     }
   };
 

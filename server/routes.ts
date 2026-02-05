@@ -26,6 +26,7 @@ import multer from "multer";
 import mammoth from "mammoth";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
+import crypto from "crypto";
 
 // Robustly handle pdf-parse which lacks a default export in some ESM environments
 import * as pdfParseModule from "pdf-parse";
@@ -56,6 +57,67 @@ function getOpenAIClient(): OpenAI {
   }
 
   return cachedOpenAI;
+}
+
+function hasOpenAIKeyConfigured() {
+  const apiKey =
+    process.env.AI_INTEGRATIONS_OPENAI_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim();
+  return Boolean(apiKey);
+}
+
+function stripHtml(input: string) {
+  return input
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function estimateMatchScore(title: string, description: string) {
+  const text = `${title} ${description}`.toLowerCase();
+  const keywords: Array<[RegExp, number]> = [
+    [/\boperations?\b|\boperator\b|\bstore\b|\bretail\b|\bwarehouse\b|\blogistics\b|\bsupply chain\b/, 22],
+    [/\bsales\b|\bbusiness development\b|\bbizdev\b|\baccount exec\b|\baccount executive\b|\baccount manager\b/, 22],
+    [/\bmanager\b|\bdirector\b|\bvp\b|\blead\b/, 14],
+    [/\bamazon\b|\be-commerce\b|\bmarketplace\b/, 10],
+    [/\bprocurement\b|\bvendor\b|\bsourcing\b/, 10],
+    [/\bai\b|\bautomation\b|\bworkflow\b/, 8],
+  ];
+
+  let score = 45;
+  for (const [re, pts] of keywords) if (re.test(text)) score += pts;
+  return Math.max(35, Math.min(95, score));
+}
+
+function scoreToPriority(score: number) {
+  if (score >= 82) return "high";
+  if (score >= 65) return "medium";
+  return "low";
+}
+
+async function fetchRemotiveJobs(opts: { search?: string }) {
+  const search = (opts.search || "").trim();
+  const url = new URL("https://remotive.com/api/remote-jobs");
+  if (search) url.searchParams.set("search", search);
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      "User-Agent": "Career-Scout/1.0 (+local)",
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const err: any = new Error(`Remotive fetch failed (${res.status})`);
+    err.status = 502;
+    err.detail = text.slice(0, 500);
+    throw err;
+  }
+  const json: any = await res.json();
+  const jobs = Array.isArray(json?.jobs) ? json.jobs : [];
+  return jobs as any[];
 }
 
 const RESUME_CONTEXT = `
@@ -416,36 +478,118 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
+  app.delete("/api/jobs/:id", isAuthenticated, async (req, res, next) => {
+    try {
+      await storage.deleteJob(parseInt(req.params.id));
+      res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // AI-powered job search
   app.post("/api/jobs/search", isAuthenticated, async (req, res, next) => {
     try {
-      const { query } = req.body;
-      const profile = await storage.getProfile(req.user!.id);
-      
-      const prompt = `Search for jobs matching query: "${query}". 
-      Candidate Info: ${profile?.summary || RESUME_CONTEXT}
-      Return JSON: { "jobs": [{ "title": "...", "company": "...", "location": "...", "description": "...", "salary": "...", "matchScore": 0-100 }] }`;
-
-      const completion = await getOpenAIClient().chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "system", content: "You are an AI job search assistant. Return valid JSON only." }, { role: "user", content: prompt }],
-        response_format: { type: "json_object" },
+      const bodySchema = z.object({
+        query: z.string().optional(),
+        location: z.string().optional(),
       });
+      const body = bodySchema.parse(req.body ?? {});
+      const query = (body.query || "").trim();
 
-      const content = completion.choices[0]?.message?.content;
-      const parsed = JSON.parse(content || '{"jobs":[]}');
-      
-      const createdJobs = [];
-      for (const job of parsed.jobs) {
-        createdJobs.push(await storage.createJob({
-          ...job,
-          userId: req.user!.id,
-          isActive: true,
-          discoveredAt: new Date(),
-        }));
+      // De-dupe based on sourceUrl to avoid endless duplicates.
+      const existing = await storage.getJobs(req.user!.id);
+      const existingUrls = new Set(
+        existing.map((j) => (j.sourceUrl || "").trim()).filter(Boolean),
+      );
+
+      // Prefer OpenAI if configured, but ALWAYS fall back to a no-key source.
+      let candidateJobs: Array<{
+        title: string;
+        company: string;
+        location: string;
+        description?: string;
+        salary?: string;
+        source?: string;
+        sourceUrl?: string;
+        matchScore?: number;
+        priority?: string;
+      }> = [];
+
+      if (hasOpenAIKeyConfigured()) {
+        try {
+          const profile = await storage.getProfile(req.user!.id);
+          const prompt = `Search for jobs matching query: "${query || "operations manager business development"}".
+Candidate Info: ${profile?.summary || RESUME_CONTEXT}
+Return JSON: { "jobs": [{ "title": "...", "company": "...", "location": "...", "description": "...", "salary": "...", "matchScore": 0-100 }] }`;
+
+          const completion = await getOpenAIClient().chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+              { role: "system", content: "You are an AI job search assistant. Return valid JSON only." },
+              { role: "user", content: prompt },
+            ],
+            response_format: { type: "json_object" },
+          });
+
+          const content = completion.choices[0]?.message?.content;
+          const parsed = JSON.parse(content || '{"jobs":[]}');
+          candidateJobs = Array.isArray(parsed?.jobs) ? parsed.jobs : [];
+        } catch {
+          // swallow and fall back
+        }
       }
-      
-      res.json(createdJobs);
+
+      if (candidateJobs.length === 0) {
+        const remotive = await fetchRemotiveJobs({ search: query || undefined });
+        candidateJobs = remotive.slice(0, 30).map((j: any) => {
+          const title = String(j?.title || "Untitled").trim();
+          const company = String(j?.company_name || "Unknown").trim();
+          const location = String(j?.candidate_required_location || "Remote").trim() || "Remote";
+          const sourceUrl = String(j?.url || "").trim();
+          const rawDesc = String(j?.description || "").trim();
+          const description = stripHtml(rawDesc).slice(0, 5000);
+          const salary = String(j?.salary || "").trim() || undefined;
+          const matchScore = estimateMatchScore(title, description);
+          const priority = scoreToPriority(matchScore);
+          return {
+            title,
+            company,
+            location,
+            description,
+            salary,
+            matchScore,
+            priority,
+            source: "remotive",
+            sourceUrl,
+          };
+        });
+      }
+
+      const createdJobs: any[] = [];
+      for (const job of candidateJobs) {
+        const url = (job.sourceUrl || "").trim();
+        if (url && existingUrls.has(url)) continue;
+        if (url) existingUrls.add(url);
+
+        createdJobs.push(
+          await storage.createJob({
+            userId: req.user!.id,
+            title: job.title,
+            company: job.company,
+            location: job.location,
+            salary: job.salary,
+            description: job.description,
+            matchScore: job.matchScore ?? estimateMatchScore(job.title, job.description || ""),
+            priority: job.priority ?? scoreToPriority(job.matchScore ?? 60),
+            source: job.source ?? "search",
+            sourceUrl: job.sourceUrl,
+            isActive: true,
+          } as any),
+        );
+      }
+
+      res.json({ ok: true, created: createdJobs.length, jobs: createdJobs });
     } catch (error) {
       next(error);
     }
@@ -500,6 +644,46 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
+  app.delete("/api/contacts/:id", isAuthenticated, async (req, res, next) => {
+    try {
+      await storage.deleteContact(parseInt(req.params.id));
+      res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Mark contacts as "mutual" if they match companies you have jobs for.
+  // (This is a lightweight heuristic; real LinkedIn/Facebook mutual graph access is restricted.)
+  app.post("/api/contacts/find-mutuals", isAuthenticated, async (req, res, next) => {
+    try {
+      const jobs = await storage.getJobs(req.user!.id);
+      const companies = new Set(
+        jobs
+          .map((j) => (j.company || "").toLowerCase().trim())
+          .filter(Boolean),
+      );
+
+      const contacts = await storage.getContacts(req.user!.id);
+      let updatedCount = 0;
+      for (const c of contacts) {
+        const company = (c.company || "").toLowerCase().trim();
+        const isMutual = Boolean(company && companies.has(company));
+        if (isMutual && !c.isMutualConnection) {
+          await storage.updateContact(c.id, {
+            isMutualConnection: true,
+            mutualConnectionWith: c.company || null,
+          } as any);
+          updatedCount++;
+        }
+      }
+
+      res.json({ ok: true, updated: updatedCount });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Daily Actions
   app.get("/api/daily-actions", isAuthenticated, async (req, res, next) => {
     try {
@@ -510,25 +694,72 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
+  app.post("/api/daily-actions", isAuthenticated, async (req, res, next) => {
+    try {
+      const validated = insertDailyActionSchema.parse(req.body);
+      const action = await storage.createDailyAction({ ...validated, userId: req.user!.id });
+      res.status(201).json(action);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/daily-actions/generate", isAuthenticated, async (req, res, next) => {
     try {
-      const completion = await getOpenAIClient().chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "system", content: "Generate 3-5 daily job search actions for the user. Return JSON: { \"actions\": [{ \"title\": \"...\", \"priority\": \"high|medium|low\" }] }" }],
-        response_format: { type: "json_object" },
-      });
-      const content = completion.choices[0]?.message?.content;
-      const parsed = JSON.parse(content || '{"actions":[]}');
-      
-      const created = [];
-      for (const action of parsed.actions) {
-        created.push(await storage.createDailyAction({
-          ...action,
-          userId: req.user!.id,
-          completed: false,
-          dueDate: new Date(),
-        }));
+      const now = new Date();
+      let actions: Array<any> = [];
+
+      if (hasOpenAIKeyConfigured()) {
+        const completion = await getOpenAIClient().chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Generate 3-5 daily job search actions for the user. Return valid JSON only: { \"actions\": [{ \"title\": \"...\", \"description\": \"...\", \"actionType\": \"apply|follow_up|network|research|call|email\", \"priority\": \"high|medium|low\" }] }",
+            },
+          ],
+          response_format: { type: "json_object" },
+        });
+        const content = completion.choices[0]?.message?.content;
+        const parsed = JSON.parse(content || '{"actions":[]}');
+        actions = Array.isArray(parsed?.actions) ? parsed.actions : [];
+      } else {
+        actions = [
+          {
+            title: "Apply to 2 roles that match your target archetypes",
+            description: "Pick high-match roles and submit tailored applications.",
+            actionType: "apply",
+            priority: "high",
+          },
+          {
+            title: "Send 3 follow-up messages to recent applications",
+            description: "Use a short, friendly follow-up template.",
+            actionType: "follow_up",
+            priority: "medium",
+          },
+          {
+            title: "Add 2 new contacts to your network",
+            description: "Recruiters, hiring managers, or warm leads.",
+            actionType: "network",
+            priority: "medium",
+          },
+        ];
       }
+
+      const created: any[] = [];
+      for (const a of actions) {
+        const safe = insertDailyActionSchema.parse({
+          title: String(a.title || "").slice(0, 300),
+          description: a.description ? String(a.description).slice(0, 2000) : undefined,
+          actionType: a.actionType || "research",
+          priority: a.priority || "low",
+          dueDate: now,
+          isCompleted: false,
+        });
+        created.push(await storage.createDailyAction({ ...safe, userId: req.user!.id }));
+      }
+
       res.status(201).json(created);
     } catch (error) {
       next(error);
@@ -537,8 +768,25 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.patch("/api/daily-actions/:id", isAuthenticated, async (req, res, next) => {
     try {
-      const action = await storage.updateDailyAction(parseInt(req.params.id), req.body.completed);
+      const bodySchema = z.object({
+        isCompleted: z.boolean().optional(),
+        title: z.string().optional(),
+        description: z.string().optional(),
+        priority: z.enum(["high", "medium", "low"]).optional(),
+        dueDate: z.coerce.date().optional(),
+      });
+      const body = bodySchema.parse(req.body ?? {});
+      const action = await storage.updateDailyAction(parseInt(req.params.id), body as any);
       res.json(action);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/daily-actions/:id", isAuthenticated, async (req, res, next) => {
+    try {
+      await storage.deleteDailyAction(parseInt(req.params.id));
+      res.json({ success: true });
     } catch (error) {
       next(error);
     }
@@ -556,25 +804,103 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.post("/api/scripts/generate", isAuthenticated, async (req, res, next) => {
     try {
-      const { type, recipientName, jobTitle, companyName } = req.body;
-      const prompt = `Generate a ${type} outreach script for ${recipientName} regarding the ${jobTitle} role at ${companyName}. Return JSON: { \"subject\": \"...\", \"content\": \"...\" }`;
-
-      const completion = await getOpenAIClient().chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "system", content: "You are an expert outreach assistant. Return valid JSON only." }, { role: "user", content: prompt }],
-        response_format: { type: "json_object" },
+      const bodySchema = z.object({
+        scriptType: z.string().optional(),
+        type: z.string().optional(),
+        jobId: z.number().int().optional(),
+        targetJobId: z.number().int().optional(),
+        customPrompt: z.string().optional(),
+        recipientName: z.string().optional(),
+        jobTitle: z.string().optional(),
+        companyName: z.string().optional(),
       });
+      const body = bodySchema.parse(req.body ?? {});
 
-      const content = completion.choices[0]?.message?.content;
-      const parsed = JSON.parse(content || '{"subject":"","content":""}');
+      const scriptType = (body.scriptType || body.type || "email").toString();
+      const jobId = body.jobId ?? body.targetJobId;
+      const job = typeof jobId === "number" ? await storage.getJob(jobId) : undefined;
+      const profile = await storage.getProfile(req.user!.id);
+
+      const jobTitle = body.jobTitle || job?.title || "the role";
+      const companyName = body.companyName || job?.company || "the company";
+      const recipientName = body.recipientName || "Hiring Team";
+
+      const extra = body.customPrompt ? `\n\nExtra instructions:\n${body.customPrompt}` : "";
+      const prompt = `Write a ${scriptType} outreach message to ${recipientName} about ${jobTitle} at ${companyName}.
+Candidate context: ${profile?.summary || RESUME_CONTEXT}
+Be concise, specific, and human. Avoid buzzwords.
+Return JSON: { "content": "..." }${extra}`;
+
+      let contentText = "";
+      if (hasOpenAIKeyConfigured()) {
+        const completion = await getOpenAIClient().chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: "You are an expert outreach assistant. Return valid JSON only." },
+            { role: "user", content: prompt },
+          ],
+          response_format: { type: "json_object" },
+        });
+        const content = completion.choices[0]?.message?.content;
+        const parsed = JSON.parse(content || '{"content":""}');
+        contentText = String(parsed?.content || "").trim();
+      }
+
+      if (!contentText) {
+        // Fallback (no key): simple template.
+        contentText = `Hi ${recipientName},\n\nI’m reaching out about the ${jobTitle} role at ${companyName}. I have a strong operations + sales background (multi-location retail ops, vendor coordination, and building new product lines), and I’d love to learn what you need most in this position.\n\nIf helpful, I can share a quick summary of relevant wins and why I’m a fit.\n\nBest,\nNed`;
+      }
+
       const script = await storage.createScript({
         userId: req.user!.id,
-        title: `${type} for ${companyName}`,
-        scriptType: type,
-        content: parsed.content,
-        targetJobId: null,
-      });
+        title: `${scriptType} - ${companyName}`.slice(0, 200),
+        scriptType,
+        content: contentText,
+        targetJobId: job?.id ?? null,
+      } as any);
       res.status(201).json(script);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Email reply helper (used by Scripts tab)
+  app.post("/api/emails/generate-reply", isAuthenticated, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        incomingEmail: z.string().min(10).max(20000),
+        tone: z.enum(["professional", "friendly", "urgent"]).optional(),
+      });
+      const { incomingEmail, tone } = schema.parse(req.body ?? {});
+      const profile = await storage.getProfile(req.user!.id);
+
+      let reply = "";
+      if (hasOpenAIKeyConfigured()) {
+        const completion = await getOpenAIClient().chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You write short, clear email replies for job search. Preserve any concrete questions and answer them. Return JSON only: {\"reply\":\"...\"}",
+            },
+            {
+              role: "user",
+              content: `Tone: ${tone || "professional"}\nCandidate: ${profile?.summary || RESUME_CONTEXT}\n\nIncoming email:\n${incomingEmail}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+        });
+        const content = completion.choices[0]?.message?.content;
+        const parsed = JSON.parse(content || '{"reply":""}');
+        reply = String(parsed?.reply || "").trim();
+      }
+
+      if (!reply) {
+        reply = `Thanks for reaching out.\n\nHappy to share more details and answer any questions. I’m available this week and can adjust to your schedule. What times work best for you?\n\nBest,\nNed`;
+      }
+
+      res.json({ ok: true, reply });
     } catch (error) {
       next(error);
     }
@@ -675,6 +1001,66 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
+  app.post("/api/interview-stories/generate", isAuthenticated, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        storyType: z.string().min(1),
+      });
+      const { storyType } = schema.parse(req.body ?? {});
+      const profile = await storage.getProfile(req.user!.id);
+
+      let storyData: any = null;
+      if (hasOpenAIKeyConfigured()) {
+        const completion = await getOpenAIClient().chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Generate a STAR interview story. Return valid JSON only: {\"title\":\"...\",\"storyType\":\"sales_win|turnaround|negotiation|scaling|leadership\",\"situation\":\"...\",\"task\":\"...\",\"action\":\"...\",\"result\":\"...\",\"metrics\":\"...\",\"applicableQuestions\":[\"...\"]}",
+            },
+            {
+              role: "user",
+              content: `Candidate context:\n${profile?.summary || RESUME_CONTEXT}\n\nStory type: ${storyType}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+        });
+        const content = completion.choices[0]?.message?.content;
+        storyData = JSON.parse(content || "null");
+      }
+
+      if (!storyData) {
+        storyData = {
+          title: `Story: ${storyType}`,
+          storyType,
+          situation: "Describe the situation.",
+          task: "What was required?",
+          action: "What did you do?",
+          result: "What happened as a result?",
+          metrics: "",
+          applicableQuestions: ["Tell me about a time you handled a challenge."],
+        };
+      }
+
+      const validated = insertInterviewStorySchema.parse({
+        title: storyData.title || `Story: ${storyType}`,
+        storyType: storyData.storyType || storyType,
+        situation: storyData.situation,
+        task: storyData.task,
+        action: storyData.action,
+        result: storyData.result,
+        metrics: storyData.metrics,
+        applicableQuestions: storyData.applicableQuestions,
+      });
+
+      const created = await storage.createInterviewStory({ ...validated, userId: req.user!.id });
+      res.status(201).json({ ok: true, story: created });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Outreach Templates
   app.get("/api/outreach-templates", isAuthenticated, async (req, res) => {
     try {
@@ -733,6 +1119,166 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
+  // OAuth connect flows (LinkedIn + Facebook)
+  // Note: Many “connections/friends list” APIs are restricted; this stores login + basic profile.
+  function getBaseUrl(req: Request) {
+    const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    return `${proto}://${host}`;
+  }
+
+  app.get("/api/oauth/linkedin/start", isAuthenticated, async (req: any, res) => {
+    const clientId = process.env.LINKEDIN_CLIENT_ID?.trim();
+    const redirectUri =
+      process.env.LINKEDIN_REDIRECT_URI?.trim() || `${getBaseUrl(req)}/api/oauth/linkedin/callback`;
+    if (!clientId) return res.status(503).send("LinkedIn OAuth not configured (LINKEDIN_CLIENT_ID).");
+
+    const state = crypto.randomBytes(16).toString("hex");
+    req.session.oauth = { provider: "linkedin", state };
+
+    const url = new URL("https://www.linkedin.com/oauth/v2/authorization");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", state);
+    // OIDC-style scopes (recommended).
+    url.searchParams.set("scope", "openid profile email");
+
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/oauth/linkedin/callback", isAuthenticated, async (req: any, res, next) => {
+    try {
+      const clientId = process.env.LINKEDIN_CLIENT_ID?.trim();
+      const clientSecret = process.env.LINKEDIN_CLIENT_SECRET?.trim();
+      const redirectUri =
+        process.env.LINKEDIN_REDIRECT_URI?.trim() || `${getBaseUrl(req)}/api/oauth/linkedin/callback`;
+      if (!clientId || !clientSecret) return res.status(503).send("LinkedIn OAuth not configured.");
+
+      const code = String(req.query.code || "");
+      const state = String(req.query.state || "");
+      const sess = req.session?.oauth;
+      if (!code || !state || !sess || sess.provider !== "linkedin" || sess.state !== state) {
+        return res.status(400).send("Invalid OAuth state.");
+      }
+
+      const tokenRes = await fetch("https://www.linkedin.com/oauth/v2/accessToken", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri,
+          client_id: clientId,
+          client_secret: clientSecret,
+        }).toString(),
+      });
+      const tokenJson: any = await tokenRes.json().catch(() => ({}));
+      if (!tokenRes.ok) {
+        return res.status(400).send(`LinkedIn token exchange failed: ${JSON.stringify(tokenJson)}`);
+      }
+
+      const accessToken = String(tokenJson.access_token || "");
+      const expiresIn = Number(tokenJson.expires_in || 0);
+
+      // OIDC userinfo endpoint.
+      const meRes = await fetch("https://api.linkedin.com/v2/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const meJson: any = await meRes.json().catch(() => ({}));
+
+      await storage.updateExternalAccount(req.user!.id, "linkedin", {
+        isConnected: true,
+        username: meJson?.email || meJson?.name || meJson?.sub || "LinkedIn",
+        profileUrl: meJson?.profile || null,
+        lastSyncedAt: new Date(),
+        settings: {
+          accessToken,
+          expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+          profile: meJson,
+        },
+      } as any);
+
+      req.session.oauth = null;
+      res.redirect("/settings?connected=linkedin");
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.get("/api/oauth/facebook/start", isAuthenticated, async (req: any, res) => {
+    const appId = process.env.FACEBOOK_APP_ID?.trim();
+    const redirectUri =
+      process.env.FACEBOOK_REDIRECT_URI?.trim() || `${getBaseUrl(req)}/api/oauth/facebook/callback`;
+    if (!appId) return res.status(503).send("Facebook OAuth not configured (FACEBOOK_APP_ID).");
+
+    const state = crypto.randomBytes(16).toString("hex");
+    req.session.oauth = { provider: "facebook", state };
+
+    const url = new URL("https://www.facebook.com/v19.0/dialog/oauth");
+    url.searchParams.set("client_id", appId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", state);
+    url.searchParams.set("scope", "public_profile,email");
+
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/oauth/facebook/callback", isAuthenticated, async (req: any, res, next) => {
+    try {
+      const appId = process.env.FACEBOOK_APP_ID?.trim();
+      const appSecret = process.env.FACEBOOK_APP_SECRET?.trim();
+      const redirectUri =
+        process.env.FACEBOOK_REDIRECT_URI?.trim() || `${getBaseUrl(req)}/api/oauth/facebook/callback`;
+      if (!appId || !appSecret) return res.status(503).send("Facebook OAuth not configured.");
+
+      const code = String(req.query.code || "");
+      const state = String(req.query.state || "");
+      const sess = req.session?.oauth;
+      if (!code || !state || !sess || sess.provider !== "facebook" || sess.state !== state) {
+        return res.status(400).send("Invalid OAuth state.");
+      }
+
+      const tokenUrl = new URL("https://graph.facebook.com/v19.0/oauth/access_token");
+      tokenUrl.searchParams.set("client_id", appId);
+      tokenUrl.searchParams.set("redirect_uri", redirectUri);
+      tokenUrl.searchParams.set("client_secret", appSecret);
+      tokenUrl.searchParams.set("code", code);
+
+      const tokenRes = await fetch(tokenUrl.toString());
+      const tokenJson: any = await tokenRes.json().catch(() => ({}));
+      if (!tokenRes.ok) {
+        return res.status(400).send(`Facebook token exchange failed: ${JSON.stringify(tokenJson)}`);
+      }
+
+      const accessToken = String(tokenJson.access_token || "");
+      const expiresIn = Number(tokenJson.expires_in || 0);
+
+      const meUrl = new URL("https://graph.facebook.com/me");
+      meUrl.searchParams.set("fields", "id,name,email,link");
+      meUrl.searchParams.set("access_token", accessToken);
+      const meRes = await fetch(meUrl.toString());
+      const meJson: any = await meRes.json().catch(() => ({}));
+
+      await storage.updateExternalAccount(req.user!.id, "facebook", {
+        isConnected: true,
+        username: meJson?.email || meJson?.name || meJson?.id || "Facebook",
+        profileUrl: meJson?.link || null,
+        lastSyncedAt: new Date(),
+        settings: {
+          accessToken,
+          expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+          profile: meJson,
+        },
+      } as any);
+
+      req.session.oauth = null;
+      res.redirect("/settings?connected=facebook");
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Weekly Plans
   app.get("/api/weekly-plans", isAuthenticated, async (req, res) => {
     try {
@@ -745,26 +1291,42 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.post("/api/weekly-plans/generate", isAuthenticated, async (req, res) => {
     try {
-      const completion = await getOpenAIClient().chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: "Generate a weekly job search plan for the candidate. Return valid JSON only: { \"goals\": [\"goal1\", \"goal2\"], \"actions\": [\"action1\", \"action2\"] }"
-          }
-        ],
-        response_format: { type: "json_object" },
-      });
-      const content = completion.choices[0]?.message?.content;
-      const parsed = JSON.parse(content || '{"goals":[], "actions":[]}');
+      let goals: string[] = [];
+      let actions: string[] = [];
+
+      if (hasOpenAIKeyConfigured()) {
+        const completion = await getOpenAIClient().chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Generate a weekly job search plan. Return valid JSON only: { \"goals\": [\"...\"], \"actions\": [\"...\"] }",
+            },
+          ],
+          response_format: { type: "json_object" },
+        });
+        const content = completion.choices[0]?.message?.content;
+        const parsed = JSON.parse(content || '{"goals":[], "actions":[]}');
+        goals = Array.isArray(parsed?.goals) ? parsed.goals : [];
+        actions = Array.isArray(parsed?.actions) ? parsed.actions : [];
+      } else {
+        goals = ["Apply to 10 roles", "Schedule 3 networking conversations"];
+        actions = [
+          "Run job search twice (Mon/Thu) and save top matches",
+          "Send 5 outreach messages",
+          "Follow up on all applications older than 5 business days",
+        ];
+      }
+
       const plan = await storage.createWeeklyPlan({
         userId: req.user!.id,
         weekStartDate: new Date(),
-        goals: parsed.goals,
-        actions: parsed.actions,
-        status: "active",
+        goals: goals.slice(0, 12),
+        notes: actions.length ? `Actions:\n- ${actions.slice(0, 20).join("\n- ")}` : undefined,
       } as any);
-      res.status(201).json(plan);
+
+      res.status(201).json({ ok: true, plan, goals, actions });
     } catch (error) {
       res.status(500).json({ error: "Failed to generate weekly plan" });
     }
@@ -777,6 +1339,43 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
       res.json(events);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch calendar events" });
+    }
+  });
+
+  app.post("/api/calendar-events/auto-assign", isAuthenticated, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        jobId: z.number().int(),
+        eventType: z.string().min(1),
+        startTime: z.coerce.date(),
+      });
+      const { jobId, eventType, startTime } = schema.parse(req.body ?? {});
+      const job = await storage.getJob(jobId);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+
+      const titlePrefix =
+        eventType === "follow_up"
+          ? "Follow-up"
+          : eventType === "deadline"
+            ? "Deadline"
+            : eventType === "networking"
+              ? "Networking"
+              : "Interview";
+
+      const event = await storage.createCalendarEvent({
+        userId: req.user!.id,
+        title: `${titlePrefix}: ${job.title} @ ${job.company}`.slice(0, 250),
+        eventType,
+        startTime,
+        description: job.sourceUrl ? `Job posting: ${job.sourceUrl}` : undefined,
+        location: job.location,
+        relatedJobId: job.id,
+        reminderMinutes: 30,
+      } as any);
+
+      res.status(201).json({ ok: true, event });
+    } catch (e) {
+      next(e);
     }
   });
 

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Switch, Route } from "wouter";
+import { useEffect } from "react";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -11,7 +11,6 @@ import { ReminderIndicator } from "@/components/reminder-indicator";
 import { RefreshButton } from "@/components/refresh-button";
 import { PWAInstallButton } from "@/components/pwa-install-button";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { useAuth } from "@/hooks/use-auth";
 import { useLoopWatchdog } from "@/hooks/use-loop-watchdog";
 import { LoopTest } from "@/components/loop-test";
 import Dashboard from "@/pages/dashboard";
@@ -23,15 +22,22 @@ import Scripts from "@/pages/scripts";
 import Actions from "@/pages/actions";
 import Strategy from "@/pages/strategy";
 import Settings from "@/pages/settings";
-import AuthPage from "@/pages/auth-page";
 import JobTrackerPage from "@/pages/jobtracker";
 import NotFound from "@/pages/not-found";
-import { Loader2 } from "lucide-react";
+
+function RedirectHome() {
+  const [, setLocation] = useLocation();
+  useEffect(() => {
+    setLocation("/");
+  }, [setLocation]);
+  return null;
+}
 
 function AuthenticatedRoutes() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
+      <Route path="/auth" component={RedirectHome} />
       <Route path="/jobtracker/:rest*" component={JobTrackerPage} />
       <Route path="/jobtracker" component={JobTrackerPage} />
       <Route path="/search" component={JobSearch} />
@@ -61,62 +67,12 @@ function App() {
 }
 
 function AppContent() {
-  const { user, isLoading, setUser, setLoading } = useAuth();
-  const hasCheckedAuth = useRef(false);
-  
   const style = {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3rem",
   };
 
-  useEffect(() => {
-    // Only check auth once
-    if (hasCheckedAuth.current) return;
-    hasCheckedAuth.current = true;
-    
-    const checkAuth = async () => {
-      try {
-        const res = await fetch("/api/user");
-        if (res.ok) {
-          const userData = await res.json();
-          setUser(userData);
-        } else {
-          setUser(null);
-        }
-      } catch (e) {
-        setUser(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAuth();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Show loading spinner while checking auth
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  // Not logged in - show auth page
-  if (!user) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <ErrorBoundary name="Auth">
-          <TooltipProvider>
-            <AuthPage />
-            <Toaster />
-          </TooltipProvider>
-        </ErrorBoundary>
-      </QueryClientProvider>
-    );
-  }
-
-  // Logged in - show main app
+  // Auth is fully bypassed: always render main app.
   return (
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary name="Global App Shell">

@@ -34,12 +34,19 @@ function isTruthy(v: string | undefined) {
   return raw === "true" || raw === "1" || raw === "yes";
 }
 
-function isDevAuthBypassEnabled() {
-  if (process.env.NODE_ENV === "production") return false;
-  const raw = (process.env.CAREER_SCOUT_DEV_AUTH_BYPASS ?? "").toLowerCase().trim();
-  // Default to enabled in non-production unless explicitly disabled.
-  if (!raw) return true;
-  return raw === "true" || raw === "1" || raw === "yes";
+function isAuthBypassEnabled() {
+  // Explicit toggle (works in any env):
+  // - CAREER_SCOUT_AUTH_BYPASS=1  -> force bypass on
+  // - CAREER_SCOUT_AUTH_BYPASS=0  -> force bypass off
+  const explicit = (process.env.CAREER_SCOUT_AUTH_BYPASS ?? "").trim();
+  if (explicit) return isTruthy(explicit);
+
+  // Back-compat dev toggle (if set, it wins).
+  const devRaw = (process.env.CAREER_SCOUT_DEV_AUTH_BYPASS ?? "").trim();
+  if (devRaw) return isTruthy(devRaw);
+
+  // Default: bypass enabled. This matches the requested behavior ("bypass all logins").
+  return true;
 }
 
 function isDemoLoginEnabled() {
@@ -185,26 +192,36 @@ export function setupAuth(app: Express) {
   app.use(passport.initialize());
   app.use(passport.session());
 
-  // Dev-only auth bypass: inject a stable admin user when no session exists.
-  // Production behavior is unchanged.
+  // Auth bypass: inject a stable user when no session exists.
+  // If databases are available, seed a real user row; otherwise fall back to a dummy user
+  // so the UI can load without any login.
   app.use(async (req, res, next) => {
-    try {
-      if (!isDevAuthBypassEnabled()) return next();
-      if (!req.path.startsWith("/api")) return next();
-      if (req.isAuthenticated?.() && req.user) return next();
+    if (!isAuthBypassEnabled()) return next();
+    if (!req.path.startsWith("/api")) return next();
+    if (req.isAuthenticated?.() && req.user) return next();
 
-      const safeUser = await ensureDevSeedUser();
-      (req as any).user = safeUser;
-      (req as any).isAuthenticated = () => true;
-      return next();
-    } catch (e: any) {
-      // In dev, surface a clear error instead of silently 401'ing.
-      const status = e?.status || 503;
-      return res.status(status).json({
-        message: "Dev auth bypass failed (database not ready/configured).",
-        detail: e?.message ?? String(e),
+    let safeUser: AuthUser;
+    try {
+      // Prefer a real seeded user when DBs are configured.
+      safeUser = getJobtrackerDatabaseUrl()
+        ? await ensureDevSeedUser()
+        : authUserSchema.parse({
+            id: "bypass_user",
+            email: "bypass@career-scout.local",
+            name: "Bypass User",
+          });
+    } catch {
+      // Never block requests behind auth when bypass is enabled.
+      safeUser = authUserSchema.parse({
+        id: "bypass_user",
+        email: "bypass@career-scout.local",
+        name: "Bypass User",
       });
     }
+
+    (req as any).user = safeUser;
+    (req as any).isAuthenticated = () => true;
+    return next();
   });
 
   passport.use(

@@ -58,8 +58,12 @@ export default function JobSearch() {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({ title: "Search complete!", description: "Found new job opportunities" });
     },
-    onError: () => {
-      toast({ title: "Search failed", variant: "destructive" });
+    onError: (error: any) => {
+      toast({
+        title: "Search failed",
+        description: String(error?.message ?? error ?? "Unknown error"),
+        variant: "destructive",
+      });
     },
   });
 

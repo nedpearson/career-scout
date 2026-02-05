@@ -81,6 +81,7 @@ export default function Settings() {
   const [externalAccounts, setExternalAccounts] = useState<Record<string, string>>({
     linkedin: "",
     indeed: "",
+    facebook: "",
   });
   const [manualJob, setManualJob] = useState<Partial<InsertJob>>({
     source: "linkedin",
@@ -143,7 +144,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (accounts) {
-      const accMap: Record<string, string> = { linkedin: "", indeed: "" };
+      const accMap: Record<string, string> = { linkedin: "", indeed: "", facebook: "" };
       accounts.forEach(acc => {
         accMap[acc.platform] = acc.profileUrl || "";
       });
@@ -1126,6 +1127,8 @@ export default function Settings() {
                       onClick={() => removeHighlight(i)}
                       className="ml-1 hover:text-destructive"
                       data-testid={`button-remove-highlight-${i}`}
+                      aria-label={`Remove highlight: ${highlight}`}
+                      title="Remove highlight"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -1166,6 +1169,8 @@ export default function Settings() {
                       onClick={() => removeSkill(i)}
                       className="ml-1 hover:text-destructive"
                       data-testid={`button-remove-skill-${i}`}
+                      aria-label={`Remove skill: ${skill}`}
+                      title="Remove skill"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -1206,6 +1211,8 @@ export default function Settings() {
                       onClick={() => removeRole(i)}
                       className="ml-1 hover:text-destructive-foreground"
                       data-testid={`button-remove-role-${i}`}
+                      aria-label={`Remove target role: ${role}`}
+                      title="Remove role"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -1950,6 +1957,24 @@ export default function Settings() {
                         >
                           Save
                         </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => (window.location.href = "/api/oauth/linkedin/start")}
+                          data-testid="button-connect-linkedin"
+                        >
+                          Connect
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setExternalAccounts(prev => ({ ...prev, linkedin: "" }));
+                            updateAccount("linkedin", "");
+                          }}
+                          data-testid="button-disconnect-linkedin"
+                        >
+                          Disconnect
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -1987,6 +2012,56 @@ export default function Settings() {
                   </div>
                   <div className="mt-6">
                     {getAccountStatus("indeed")}
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2 flex-1">
+                    <SiFacebook className="h-5 w-5 text-[#1877F2]" />
+                    <div className="flex-1 space-y-1">
+                      <Label htmlFor="facebook-url">Facebook Profile URL</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="facebook-url"
+                          placeholder="https://facebook.com/username"
+                          value={externalAccounts.facebook}
+                          onChange={(e) => setExternalAccounts(prev => ({ ...prev, facebook: e.target.value }))}
+                          data-testid="input-facebook-url"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => updateAccount("facebook", externalAccounts.facebook)}
+                          disabled={accountMutation.isPending}
+                          data-testid="button-save-facebook"
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => (window.location.href = "/api/oauth/facebook/start")}
+                          data-testid="button-connect-facebook"
+                        >
+                          Connect
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setExternalAccounts(prev => ({ ...prev, facebook: "" }));
+                            updateAccount("facebook", "");
+                          }}
+                          data-testid="button-disconnect-facebook"
+                        >
+                          Disconnect
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-6">
+                    {getAccountStatus("facebook")}
                   </div>
                 </div>
               </div>

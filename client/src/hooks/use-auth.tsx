@@ -8,9 +8,16 @@ interface AuthState {
   setLoading: (isLoading: boolean) => void;
 }
 
+// Auth is fully bypassed: always provide a stable local user.
+const BYPASS_USER: AuthUser = {
+  id: "bypass_user",
+  email: "bypass@career-scout.local",
+  name: "Bypass User",
+};
+
 export const useAuth = create<AuthState>()((set) => ({
-  user: null,
-  isLoading: true,
+  user: BYPASS_USER,
+  isLoading: false,
   setUser: (user) => set({ user }),
   setLoading: (isLoading) => set({ isLoading }),
 }));
